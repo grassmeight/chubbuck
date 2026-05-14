@@ -1,0 +1,33 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local dev outputs (DEV_KEEP_OUTPUTS=1)
+tests/
+_*.xlsx
+_*.pdf
+_*.png
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Claude harness scratch
+.claude/
+
+# Personal sample inputs (screenplays / docs) and screenshots — only the
+# template xlsx is needed by the app; sample PDFs/DOCX live next to it for
+# local debugging but must not be published.
+/*.pdf
+/*.docx
+/*.doc
+Screenshot*.png
+/*.png
+
+# Local dev scripts (not needed in deployed image)
+debug_parser.py
+test_*.py

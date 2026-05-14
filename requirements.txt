@@ -1,0 +1,8 @@
+pymupdf==1.27.2.3
+openpyxl==3.1.5
+python-docx==1.2.0
+pdfplumber==0.11.4
+python-bidi<0.5
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+python-multipart==0.0.28

@@ -1,0 +1,27 @@
+.git
+.gitignore
+.venv
+.vscode
+.idea
+.claude
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Local dev artifacts
+tests/
+_*.xlsx
+_*.pdf
+_*.png
+debug_parser.py
+test_*.py
+
+# Docker meta
+Dockerfile
+.dockerignore
+
+# Editor / OS
+*.swp
+.DS_Store
+Thumbs.db

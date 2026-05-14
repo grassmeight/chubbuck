@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>צ'בק · ניתוח סצנות</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;700;800;900&family=Assistant:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Brand magenta sampled from the logo */
+      --magenta:        oklch(0.62 0.27 5);
+      --magenta-deep:   oklch(0.46 0.24 5);
+      --magenta-darker: oklch(0.34 0.18 5);
+      --magenta-wash:   oklch(0.97 0.035 5);
+      --magenta-wash-2: oklch(0.93 0.07 5);
+
+      /* Warm-tinted neutrals — every neutral pulled toward the brand hue */
+      --cream:    oklch(0.97 0.012 30);
+      --paper:    oklch(0.995 0.005 30);
+      --ink:      oklch(0.20 0.025 5);
+      --ink-soft: oklch(0.40 0.025 5);
+      --muted:    oklch(0.55 0.022 5);
+      --line:     oklch(0.88 0.018 30);
+
+      /* Supporting accents */
+      --gold:      oklch(0.78 0.13 75);
+      --gold-deep: oklch(0.40 0.13 75);
+      --gold-wash: oklch(0.96 0.04 75);
+      --error:      oklch(0.50 0.18 25);
+      --error-wash: oklch(0.96 0.04 25);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      font-family: 'Assistant', -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      background: var(--cream);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Drenched magenta hero. The dust SVG is generated in JS on load — many
+       small white particles biased toward the brand mark, with a few small
+       4-pointed stars mixed in (echoes the logo's letters-made-of-dust). */
+    .stage {
+      background: var(--magenta);
+      color: var(--paper);
+      padding: 80px 24px 104px;
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+    }
+    .dust {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .brand {
+      max-width: 720px;
+      margin: 0 auto;
+      text-align: center;
+      position: relative;
+      z-index: 1;
+    }
+    .brand .mark {
+      font-family: 'Heebo', sans-serif;
+      font-weight: 900;
+      font-size: clamp(80px, 15vw, 168px);
+      line-height: 0.88;
+      letter-spacing: -0.045em;
+      margin: 0 0 18px;
+      color: var(--paper);
+    }
+    .brand .tagline {
+      font-family: 'Assistant', sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: 0.22em;
+      opacity: 0.92;
+      margin: 0;
+    }
+
+    main {
+      max-width: 660px;
+      margin: -64px auto 0;
+      padding: 0 24px 88px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .panel {
+      background: var(--paper);
+      border-radius: 22px;
+      padding: 44px 36px 36px;
+      box-shadow:
+        0 24px 56px -22px oklch(0.40 0.22 5 / 0.32),
+        0 2px 6px oklch(0.40 0.22 5 / 0.05);
+      border: 1px solid var(--line);
+    }
+
+    h1 {
+      font-family: 'Heebo', sans-serif;
+      font-weight: 800;
+      font-size: 36px;
+      margin: 0 0 12px;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+      line-height: 1.05;
+    }
+    .lead {
+      color: var(--ink-soft);
+      margin: 0 0 30px;
+      line-height: 1.6;
+      font-size: 16px;
+      max-width: 56ch;
+    }
+    .lead strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .dropzone {
+      position: relative;
+      border: 1.5px dashed oklch(from var(--magenta) l c h / 0.42);
+      border-radius: 16px;
+      padding: 56px 24px;
+      text-align: center;
+      cursor: pointer;
+      background: var(--magenta-wash);
+      transition:
+        background-color 220ms cubic-bezier(0.22, 1, 0.36, 1),
+        border-color    220ms cubic-bezier(0.22, 1, 0.36, 1),
+        transform       160ms cubic-bezier(0.23, 1, 0.32, 1);
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .dropzone:hover {
+        background: var(--magenta-wash-2);
+        border-color: var(--magenta);
+      }
+    }
+    .dropzone.drag-over {
+      background: var(--magenta-wash-2);
+      border-color: var(--magenta);
+      transform: scale(1.005);
+    }
+    .dropzone:active:not([aria-disabled="true"]) {
+      transform: scale(0.985);
+    }
+    .dropzone[aria-disabled="true"] {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    /* Touch devices have no drag affordance — surface different copy. */
+    .for-touch { display: none; }
+    @media (hover: none), (pointer: coarse) {
+      .for-hover { display: none; }
+      .for-touch { display: inline; }
+    }
+    .dropzone .ornament {
+      width: 52px;
+      height: 52px;
+      margin: 0 auto 16px;
+      display: block;
+      color: var(--magenta);
+    }
+    .dropzone .main-text {
+      font-family: 'Heebo', sans-serif;
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--ink);
+      margin-bottom: 6px;
+      line-height: 1.2;
+      letter-spacing: -0.015em;
+    }
+    .dropzone .sub-text {
+      font-size: 14px;
+      color: var(--ink-soft);
+    }
+
+    input[type="file"] { display: none; }
+
+    .status {
+      margin-top: 20px;
+      padding: 14px 18px;
+      border-radius: 10px;
+      font-size: 15px;
+      line-height: 1.5;
+      display: none;
+      border: 1px solid transparent;
+    }
+    .status.show { display: block; }
+    .status.info {
+      background: var(--magenta-wash);
+      color: var(--magenta-darker);
+      border-color: oklch(from var(--magenta) 0.85 0.07 h);
+    }
+    .status.success {
+      background: var(--gold-wash);
+      color: var(--gold-deep);
+      border-color: oklch(from var(--gold) 0.85 0.08 h);
+    }
+    .status.error {
+      background: var(--error-wash);
+      color: var(--error);
+      border-color: oklch(from var(--error) 0.85 0.08 h);
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 13px; height: 13px;
+      border: 2px solid oklch(from var(--magenta) l c h / 0.25);
+      border-top-color: var(--magenta);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: -2px;
+      margin-left: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .footer-note {
+      margin-top: 30px;
+      font-size: 13px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.65;
+    }
+
+    /* Mobile.
+       Goal: the panel + CTA visible without scrolling on a 375x667 viewport.
+       That means a much shorter hero (the brand mark stops trying to fill
+       the width) and a tighter panel. Also: respect the bottom safe-area
+       inset on notched devices so the footer note isn't under the home bar. */
+    @media (max-width: 600px) {
+      .stage {
+        padding: calc(20px + env(safe-area-inset-top, 0px)) 18px 64px;
+      }
+      .brand .mark {
+        font-size: clamp(64px, 18vw, 92px);
+        margin-bottom: 12px;
+        letter-spacing: -0.04em;
+      }
+      .brand .tagline {
+        font-size: 12px;
+        letter-spacing: 0.18em;
+      }
+      main {
+        margin-top: -48px;
+        padding: 0 18px calc(56px + env(safe-area-inset-bottom, 0px));
+      }
+      .panel {
+        padding: 28px 20px 24px;
+        border-radius: 18px;
+        box-shadow:
+          0 16px 40px -20px oklch(0.40 0.22 5 / 0.30),
+          0 1px 4px oklch(0.40 0.22 5 / 0.04);
+      }
+      h1 {
+        font-size: 26px;
+        margin-bottom: 8px;
+      }
+      .lead {
+        font-size: 14.5px;
+        line-height: 1.55;
+        margin-bottom: 22px;
+      }
+      .dropzone {
+        padding: 40px 16px;
+        border-radius: 14px;
+      }
+      .dropzone .ornament {
+        width: 44px;
+        height: 44px;
+        margin-bottom: 12px;
+      }
+      .dropzone .main-text { font-size: 18px; }
+      .dropzone .sub-text  { font-size: 13px; }
+      .status {
+        margin-top: 16px;
+        padding: 12px 14px;
+        font-size: 14px;
+      }
+      .footer-note {
+        margin-top: 22px;
+        font-size: 12.5px;
+        padding: 0 6px;
+      }
+    }
+
+    /* Narrow phones (iPhone SE-class and smaller). */
+    @media (max-width: 380px) {
+      .stage { padding: 16px 14px 56px; }
+      .brand .mark { font-size: 60px; margin-bottom: 10px; }
+      main {
+        margin-top: -40px;
+        padding: 0 14px calc(48px + env(safe-area-inset-bottom, 0px));
+      }
+      .panel { padding: 24px 16px 20px; border-radius: 16px; }
+      h1 { font-size: 23px; }
+      .lead { font-size: 14px; margin-bottom: 18px; }
+      .dropzone { padding: 32px 14px; }
+      .dropzone .ornament { width: 40px; height: 40px; margin-bottom: 10px; }
+      .dropzone .main-text { font-size: 17px; }
+    }
+
+    /* Reduced motion: keep state transitions for legibility, drop scale. */
+    @media (prefers-reduced-motion: reduce) {
+      .dropzone, .dropzone:active, .dropzone.drag-over {
+        transform: none !important;
+        transition: background-color 160ms ease, border-color 160ms ease;
+      }
+      .spinner { animation-duration: 1.4s; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="stage">
+    <svg class="dust" aria-hidden="true" preserveAspectRatio="xMidYMid slice"></svg>
+    <div class="brand">
+      <h1 class="mark">צ'בק</h1>
+      <p class="tagline">טכניקות צ'בק בישראל</p>
+    </div>
+  </header>
+
+  <main>
+    <div class="panel">
+      <h1>ניתוח סצנות</h1>
+      <p class="lead">
+        העלו סצנה ב־PDF או Word וקבלו טבלת ניתוח מוכנה להורדה.
+        לאיכות טקסט מיטבית, מומלץ <strong>Word (.docx)</strong> כאשר זמין.
+      </p>
+
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="העלאת קובץ">
+        <svg class="ornament" viewBox="0 0 56 56" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 8h18l8 8v28a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4z"/>
+          <path d="M34 8v8h8"/>
+          <line x1="18" y1="26" x2="32" y2="26" opacity="0.55"/>
+          <line x1="18" y1="32" x2="36" y2="32" opacity="0.55"/>
+          <line x1="18" y1="38" x2="28" y2="38" opacity="0.55"/>
+          <circle cx="40" cy="22" r="0.9" fill="currentColor"/>
+          <circle cx="44" cy="28" r="0.7" fill="currentColor"/>
+          <circle cx="38" cy="30" r="0.6" fill="currentColor"/>
+          <circle cx="42" cy="36" r="0.8" fill="currentColor"/>
+          <circle cx="46" cy="20" r="0.5" fill="currentColor"/>
+        </svg>
+        <div class="main-text">
+          <span class="for-hover">גררו לכאן את הסצנה</span>
+          <span class="for-touch">בחרו סצנה להעלאה</span>
+        </div>
+        <div class="sub-text">
+          <span class="for-hover">או לחצו לבחירה — PDF / DOCX, עד 25MB</span>
+          <span class="for-touch">PDF או DOCX, עד 25MB</span>
+        </div>
+      </div>
+      <input type="file" id="fileInput" accept=".pdf,.docx,.doc" />
+      <div class="status" id="status"></div>
+    </div>
+
+    <p class="footer-note">
+      הקובץ מעובד בשרת ולא נשמר. לאחר ההורדה הוא נמחק.
+    </p>
+  </main>
+
+  <script>
+    /* Generate the dust texture for the hero. ~420 white particles of varied
+       size and opacity, with density biased toward the center where the
+       brand mark sits, plus a few small 4-pointed stars sprinkled in. */
+    (function generateDust() {
+      const dust = document.querySelector('.dust');
+      if (!dust) return;
+      const SVG_NS = 'http://www.w3.org/2000/svg';
+      const W = 1200, H = 500;
+      dust.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+      // Triangular distribution sum-of-uniforms — peaks at center, tapers off.
+      function biased(extent, sigma) {
+        const r = (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
+        return Math.max(0, Math.min(extent, extent * 0.5 + r * extent));
+      }
+
+      const N_PARTICLES = 420;
+      for (let i = 0; i < N_PARTICLES; i++) {
+        let x, y;
+        if (Math.random() < 0.78) {
+          // Concentrated cloud around the brand mark
+          x = biased(W, 0.16);
+          y = biased(H, 0.20);
+        } else {
+          // Sparse spread covering the rest of the band
+          x = Math.random() * W;
+          y = Math.random() * H;
+        }
+
+        const t = Math.random();
+        let r;
+        if (t < 0.55)      r = 0.4 + Math.random() * 0.5;   // fine grit
+        else if (t < 0.85) r = 0.9 + Math.random() * 0.7;   // small flecks
+        else if (t < 0.97) r = 1.6 + Math.random() * 0.9;   // medium specks
+        else               r = 2.4 + Math.random() * 1.3;   // a few bigger
+
+        const opacity = 0.35 + Math.random() * 0.6;
+        const c = document.createElementNS(SVG_NS, 'circle');
+        c.setAttribute('cx', x.toFixed(1));
+        c.setAttribute('cy', y.toFixed(1));
+        c.setAttribute('r',  r.toFixed(2));
+        c.setAttribute('fill', '#fff');
+        c.setAttribute('opacity', opacity.toFixed(2));
+        dust.appendChild(c);
+      }
+
+      // A handful of tiny 4-pointed stars for a touch of sparkle.
+      const N_STARS = 9;
+      for (let i = 0; i < N_STARS; i++) {
+        const x = 60 + Math.random() * (W - 120);
+        const y = 40 + Math.random() * (H - 80);
+        const s = 3.5 + Math.random() * 2.5;
+        const k = s * 0.28;
+        const star = document.createElementNS(SVG_NS, 'path');
+        star.setAttribute('d',
+          `M${x.toFixed(1)} ${(y - s).toFixed(1)} ` +
+          `L${(x + k).toFixed(1)} ${(y - k).toFixed(1)} ` +
+          `L${(x + s).toFixed(1)} ${y.toFixed(1)} ` +
+          `L${(x + k).toFixed(1)} ${(y + k).toFixed(1)} ` +
+          `L${x.toFixed(1)} ${(y + s).toFixed(1)} ` +
+          `L${(x - k).toFixed(1)} ${(y + k).toFixed(1)} ` +
+          `L${(x - s).toFixed(1)} ${y.toFixed(1)} ` +
+          `L${(x - k).toFixed(1)} ${(y - k).toFixed(1)} Z`);
+        star.setAttribute('fill', '#fff');
+        star.setAttribute('opacity', (0.55 + Math.random() * 0.4).toFixed(2));
+        dust.appendChild(star);
+      }
+    })();
+
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const statusEl = document.getElementById('status');
+
+    let inFlight = false;
+
+    function setStatus(kind, html) {
+      statusEl.className = 'status show ' + kind;
+      statusEl.innerHTML = html;
+    }
+    function clearStatus() {
+      statusEl.className = 'status';
+      statusEl.textContent = '';
+    }
+
+    function setBusy(busy) {
+      inFlight = busy;
+      dropzone.setAttribute('aria-disabled', busy ? 'true' : 'false');
+    }
+
+    function isAcceptable(file) {
+      const name = (file.name || '').toLowerCase();
+      return name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.doc');
+    }
+
+    async function upload(file) {
+      if (inFlight) return;
+      if (!isAcceptable(file)) {
+        setStatus('error', 'סוג קובץ לא נתמך. אנא העלו PDF או DOCX.');
+        return;
+      }
+      if (file.size > 25 * 1024 * 1024) {
+        setStatus('error', 'הקובץ גדול מדי (מקסימום 25MB).');
+        return;
+      }
+      setBusy(true);
+      setStatus('info', 'מנתחים את הסצנה<span class="spinner"></span>');
+
+      const form = new FormData();
+      form.append('file', file);
+
+      try {
+        const response = await fetch('/api/convert', { method: 'POST', body: form });
+        if (!response.ok) {
+          let msg = `שגיאה (${response.status})`;
+          try {
+            const data = await response.json();
+            if (data && data.detail) msg = data.detail;
+          } catch {}
+          setStatus('error', msg);
+          return;
+        }
+
+        // Pull the filename out of the Content-Disposition header if present.
+        let filename = file.name.replace(/\.(pdf|docx|doc)$/i, '') + ' - ניתוח.pdf';
+        const cd = response.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
+        if (m && m[1]) {
+          try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; }
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        setStatus('success', '✓ הניתוח מוכן והורד אליכם');
+      } catch (err) {
+        setStatus('error', 'שגיאת רשת: ' + (err && err.message ? err.message : err));
+      } finally {
+        setBusy(false);
+        fileInput.value = '';
+      }
+    }
+
+    dropzone.addEventListener('click', () => {
+      if (!inFlight) fileInput.click();
+    });
+    dropzone.addEventListener('keydown', (e) => {
+      if (!inFlight && (e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) upload(file);
+    });
+
+    ['dragenter', 'dragover'].forEach(evt => {
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        if (!inFlight) dropzone.classList.add('drag-over');
+      });
+    });
+    ['dragleave', 'drop'].forEach(evt => {
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('drag-over');
+      });
+    });
+    dropzone.addEventListener('drop', (e) => {
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) upload(file);
+    });
+
+    // Prevent the browser from navigating away if a file is dropped outside the drop zone.
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => e.preventDefault());
+  </script>
+</body>
+</html>
+</content>
