@@ -14,6 +14,7 @@ a 10pt padding so the cell never crops.
 from __future__ import annotations
 
 import math
+import os
 from copy import copy
 from pathlib import Path
 from openpyxl import load_workbook
@@ -50,43 +51,69 @@ _PAGE_CONTENT_HEIGHT_PT = 798.0
 # Empirical layout numbers tuned to the template (Calibri 16, column B width
 # 52.71). Hebrew text at this column width and font size wraps at roughly this
 # many characters per visual line.
-_CHARS_PER_LINE = 50
-_LINE_HEIGHT_PT = 21.0
-_HEIGHT_PADDING_PT = 10.0          # long rows (3+ wrapped lines)
-_SHORT_HEIGHT_PADDING_PT = 8.0     # short non-name rows (<= 2 wrapped lines)
-_NAME_HEIGHT_PADDING_PT = 5.0      # name rows
-_MIN_ROW_HEIGHT_PT = 21.0
-# Long dialogue blocks visually crowd the cell; bump padding for 5+ wrapped
-# lines so the text breathes.
-_LONG_DIALOGUE_LINE_THRESHOLD = 5
-_LONG_DIALOGUE_EXTRA_PADDING_PT = 5.0
+#
+# Two-profile setup, gated on CELL_FONT_OVERRIDE:
+#   - OFF (local dev, Carlito): the original tuning that produced the
+#     reference output. _LINE_HEIGHT_PT=24, paddings small.
+#   - ON  (Lambda, Noto Sans Hebrew): Noto renders noticeably taller AND
+#     wider than Carlito at the same point size. The OFF tuning undercounts
+#     both visual line height and per-line character capacity, which packed
+#     rows tight and let long dialogue cells overflow off the bottom of the
+#     page (text cut mid-sentence). The ON tuning bumps both line height
+#     and per-tier padding, and lowers _CHARS_PER_LINE so wrap estimates
+#     run conservative.
+_MIN_ROW_HEIGHT_PT = 24.0
+_LONG_LINE_THRESHOLD = 4  # >=4 wrapped lines -> "long" padding tier
+
+
+def _layout_profile() -> dict:
+    """Return font-dependent layout constants. Read at call time so changes
+    to CELL_FONT_OVERRIDE between requests are picked up without reload.
+    """
+    if os.environ.get("CELL_FONT_OVERRIDE"):
+        return {
+            "chars_per_line": 46,
+            "line_height_pt": 27.0,
+            "name_pad": 6.0,
+            "dialogue_short_pad": 6.0,
+            "dialogue_long_pad": 14.0,
+            "stage_short_pad": 6.0,
+            "stage_long_pad": 10.0,
+        }
+    return {
+        "chars_per_line": 50,
+        "line_height_pt": 24.0,
+        "name_pad": 4.0,
+        "dialogue_short_pad": 4.0,
+        "dialogue_long_pad": 10.0,
+        "stage_short_pad": 4.0,
+        "stage_long_pad": 6.0,
+    }
 
 
 def _estimate_row_height(text: str, kind: str) -> float:
     """Estimate the visual row height in points, given the wrapped text.
 
-    Counts explicit newlines plus an approximate wrap based on character count.
-    Padding tiers:
-      - name              ->  5pt (always single line)
-      - short row         ->  8pt (<= 2 wrapped lines)
-      - long row          -> 10pt (3+ wrapped lines)
-      - long dialogue     -> +5pt extra (5+ wrapped lines of dialogue)
+    Counts explicit newlines plus an approximate wrap based on character
+    count. Profile-aware: padding tiers and line height come from
+    _layout_profile() so Lambda (Noto) gets looser values than local
+    (Carlito).
     """
     if not text:
         return _MIN_ROW_HEIGHT_PT
+    p = _layout_profile()
     paragraphs = text.split("\n")
     total_lines = 0
-    for p in paragraphs:
-        total_lines += max(1, math.ceil(len(p) / _CHARS_PER_LINE))
+    for para in paragraphs:
+        total_lines += max(1, math.ceil(len(para) / p["chars_per_line"]))
+    is_long = total_lines >= _LONG_LINE_THRESHOLD
     if kind == "name":
-        padding = _NAME_HEIGHT_PADDING_PT
-    elif total_lines <= 2:
-        padding = _SHORT_HEIGHT_PADDING_PT
-    else:
-        padding = _HEIGHT_PADDING_PT
-    if kind == "dialogue" and total_lines >= _LONG_DIALOGUE_LINE_THRESHOLD:
-        padding += _LONG_DIALOGUE_EXTRA_PADDING_PT
-    height = total_lines * _LINE_HEIGHT_PT + padding
+        padding = p["name_pad"]
+    elif kind == "dialogue":
+        padding = p["dialogue_long_pad"] if is_long else p["dialogue_short_pad"]
+    else:  # stage_direction
+        padding = p["stage_long_pad"] if is_long else p["stage_short_pad"]
+    height = total_lines * p["line_height_pt"] + padding
     return max(_MIN_ROW_HEIGHT_PT, height)
 
 
@@ -224,6 +251,47 @@ def fill_template(items: list[dict], template_path: str | Path,
     wb = load_workbook(template_path)
     ws = wb.active
 
+    # CELL_FONT_OVERRIDE workaround for the LibreOffice-on-Lambda Hebrew
+    # rendering bug (see comment near the per-item Font assignment below).
+    # Apply globally to every cell that already has a font set, so the
+    # template's static labels also get readable Hebrew — not just the
+    # data cells we fill in below.
+    #
+    # Also force readingOrder=2 (RTL) on every template cell. The template's
+    # static labels rely on font-based bidi inference; once we swap the font
+    # to Noto Sans Hebrew that inference shifts, and bidi-neutral chars in
+    # mixed Hebrew/ASCII labels drift to the wrong end:
+    #   "נסיבות מקדימות:" -> the trailing colon detaches the leading נ
+    #   "טקסט + אובייקטים פנימיים + סימון ביטים" -> "+ +" jumps to the front
+    # Pinning readingOrder=2 stabilizes the layout regardless of font choice.
+    font_override = os.environ.get("CELL_FONT_OVERRIDE")
+    if font_override:
+        for row in ws.iter_rows():
+            for cell in row:
+                f = cell.font
+                if f is None:
+                    continue
+                cell.font = Font(
+                    name=font_override,
+                    size=f.size,
+                    bold=f.bold,
+                    italic=f.italic,
+                    underline=f.underline,
+                    color=f.color,
+                    strike=f.strike,
+                    vertAlign=f.vertAlign,
+                )
+                a = cell.alignment
+                cell.alignment = Alignment(
+                    horizontal=a.horizontal,
+                    vertical=a.vertical,
+                    wrap_text=a.wrap_text,
+                    text_rotation=a.text_rotation,
+                    indent=a.indent or 0,
+                    shrink_to_fit=a.shrink_to_fit,
+                    readingOrder=2,
+                )
+
     # Print settings: landscape A4, narrow margins, explicit scale.
     #
     # Why scale=PRINT_SCALE / fitToPage=False (NOT auto-fit-to-width):
@@ -267,8 +335,17 @@ def fill_template(items: list[dict], template_path: str | Path,
         underline = "single" if kind == "name" else None
 
         cell.value = item["text"]
+        # CELL_FONT_OVERRIDE forces a specific font name regardless of the
+        # template's setting. Used by the AWS Lambda deploy to work around
+        # a LibreOffice bug: when the cell font is Calibri (and Carlito is
+        # the substitute), LO picks NotoSansDevanagari as the Hebrew
+        # fallback — which has no Hebrew glyphs, so output renders as
+        # tofu boxes. Setting CELL_FONT_OVERRIDE="Noto Sans Hebrew" makes
+        # Hebrew chars render correctly. Latin chars in the same cells
+        # still fall back to Carlito (Calibri-metric) so the page-break
+        # math stays approximately correct.
         cell.font = Font(
-            name=base_font.name or "Calibri",
+            name=os.environ.get("CELL_FONT_OVERRIDE") or base_font.name or "Calibri",
             size=base_font.size or 16,
             bold=bold,
             underline=underline,

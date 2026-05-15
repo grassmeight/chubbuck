@@ -25,9 +25,9 @@
       --line:     oklch(0.88 0.018 30);
 
       /* Supporting accents */
-      --gold:      oklch(0.78 0.13 75);
-      --gold-deep: oklch(0.40 0.13 75);
-      --gold-wash: oklch(0.96 0.04 75);
+      --green:      oklch(0.70 0.14 150);
+      --green-deep: oklch(0.38 0.10 150);
+      --green-wash: oklch(0.96 0.04 150);
       --error:      oklch(0.50 0.18 25);
       --error-wash: oklch(0.96 0.04 25);
     }
@@ -47,9 +47,21 @@
 
     /* Drenched magenta hero. The dust SVG is generated in JS on load — many
        small white particles biased toward the brand mark, with a few small
-       4-pointed stars mixed in (echoes the logo's letters-made-of-dust). */
+       4-pointed stars mixed in (echoes the logo's letters-made-of-dust).
+       Layered background: warm spotlight behind the brand mark + warm
+       footlight wash along the bottom + a subtle vertical depth gradient.
+       Suggests stage lighting without being a theater cliché. */
     .stage {
-      background: var(--magenta);
+      background:
+        radial-gradient(ellipse 70% 28% at 50% 100%,
+          oklch(0.78 0.22 32 / 0.45), transparent 72%),
+        radial-gradient(ellipse 58% 78% at 50% 36%,
+          oklch(0.84 0.16 22 / 0.42), transparent 68%),
+        linear-gradient(180deg,
+          oklch(0.52 0.26 5),
+          var(--magenta) 38%,
+          var(--magenta) 62%,
+          oklch(0.50 0.25 5));
       color: var(--paper);
       padding: 80px 24px 104px;
       position: relative;
@@ -78,8 +90,13 @@
       font-size: clamp(80px, 15vw, 168px);
       line-height: 0.88;
       letter-spacing: -0.045em;
-      margin: 0 0 18px;
+      margin: 0 0 22px;
       color: var(--paper);
+      /* Soft warm halo + a hint of depth — reads as lit, not flat-printed. */
+      text-shadow:
+        0 0 64px oklch(0.88 0.16 28 / 0.42),
+        0 0 18px oklch(0.95 0.08 30 / 0.30),
+        0 2px 0 oklch(0.34 0.20 5 / 0.22);
     }
     .brand .tagline {
       font-family: 'Assistant', sans-serif;
@@ -88,6 +105,20 @@
       letter-spacing: 0.22em;
       opacity: 0.92;
       margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.9em;
+    }
+    .brand .tagline::before,
+    .brand .tagline::after {
+      content: "";
+      display: inline-block;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.55;
+      flex-shrink: 0;
     }
 
     main {
@@ -208,9 +239,9 @@
       border-color: oklch(from var(--magenta) 0.85 0.07 h);
     }
     .status.success {
-      background: var(--gold-wash);
-      color: var(--gold-deep);
-      border-color: oklch(from var(--gold) 0.85 0.08 h);
+      background: var(--green-wash);
+      color: var(--green-deep);
+      border-color: oklch(from var(--green) 0.85 0.08 h);
     }
     .status.error {
       background: var(--error-wash);
@@ -331,7 +362,7 @@
     <svg class="dust" aria-hidden="true" preserveAspectRatio="xMidYMid slice"></svg>
     <div class="brand">
       <h1 class="mark">צ'בק</h1>
-      <p class="tagline">טכניקות צ'בק בישראל</p>
+      <p class="tagline">טכניקת צ'בק בישראל</p>
     </div>
   </header>
 
@@ -340,7 +371,6 @@
       <h1>ניתוח סצנות</h1>
       <p class="lead">
         העלו סצנה ב־PDF או Word וקבלו טבלת ניתוח מוכנה להורדה.
-        לאיכות טקסט מיטבית, מומלץ <strong>Word (.docx)</strong> כאשר זמין.
       </p>
 
       <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="העלאת קובץ">
@@ -376,15 +406,16 @@
   </main>
 
   <script>
-    /* Generate the dust texture for the hero. ~420 white particles of varied
-       size and opacity, with density biased toward the center where the
-       brand mark sits, plus a few small 4-pointed stars sprinkled in. */
-    (function generateDust() {
-      const dust = document.querySelector('.dust');
-      if (!dust) return;
+    /* Generate the dust texture for the hero. White particles + a few stars,
+       biased toward the brand mark. The viewBox is sized 1:1 with the stage's
+       actual CSS dimensions so particle radii render at their intended pixel
+       size on every viewport — the previous fixed 1200x500 viewBox got
+       slice-scaled to ~0.4x on mobile, making the particles sub-pixel. */
+    (function setupDust() {
+      const stage = document.querySelector('.stage');
+      const dust  = document.querySelector('.dust');
+      if (!stage || !dust) return;
       const SVG_NS = 'http://www.w3.org/2000/svg';
-      const W = 1200, H = 500;
-      dust.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
       // Triangular distribution sum-of-uniforms — peaks at center, tapers off.
       function biased(extent, sigma) {
@@ -392,57 +423,135 @@
         return Math.max(0, Math.min(extent, extent * 0.5 + r * extent));
       }
 
-      const N_PARTICLES = 420;
-      for (let i = 0; i < N_PARTICLES; i++) {
-        let x, y;
-        if (Math.random() < 0.78) {
-          // Concentrated cloud around the brand mark
-          x = biased(W, 0.16);
-          y = biased(H, 0.20);
-        } else {
-          // Sparse spread covering the rest of the band
-          x = Math.random() * W;
-          y = Math.random() * H;
+      function render() {
+        const stageRect = stage.getBoundingClientRect();
+        const W = Math.max(1, Math.round(stageRect.width));
+        const H = Math.max(1, Math.round(stageRect.height));
+
+        // Exclusion zones — dust frames the brand text, doesn't sit on it.
+        // Always exclude the brand mark. On mobile (<600px) also exclude the
+        // tagline: the hero is small and the dust is denser, so without this
+        // particles crowd the tagline. On desktop the wide hero gives the
+        // tagline plenty of natural breathing room.
+        const excludeSelectors = ['.brand .mark'];
+        if (window.innerWidth < 600) excludeSelectors.push('.brand .tagline');
+        const exclusions = excludeSelectors
+          .map(sel => document.querySelector(sel))
+          .filter(el => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          })
+          .map(el => {
+            const r = el.getBoundingClientRect();
+            const padX = Math.max(8, r.width  * 0.04);
+            const padY = Math.max(8, r.height * 0.06);
+            return {
+              x1: (r.left   - stageRect.left) - padX,
+              y1: (r.top    - stageRect.top)  - padY,
+              x2: (r.right  - stageRect.left) + padX,
+              y2: (r.bottom - stageRect.top)  + padY,
+            };
+          });
+        function inExclusion(x, y) {
+          for (let i = 0; i < exclusions.length; i++) {
+            const e = exclusions[i];
+            if (x >= e.x1 && x <= e.x2 && y >= e.y1 && y <= e.y2) return true;
+          }
+          return false;
         }
 
-        const t = Math.random();
-        let r;
-        if (t < 0.55)      r = 0.4 + Math.random() * 0.5;   // fine grit
-        else if (t < 0.85) r = 0.9 + Math.random() * 0.7;   // small flecks
-        else if (t < 0.97) r = 1.6 + Math.random() * 0.9;   // medium specks
-        else               r = 2.4 + Math.random() * 1.3;   // a few bigger
+        dust.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        dust.replaceChildren();
 
-        const opacity = 0.35 + Math.random() * 0.6;
-        const c = document.createElementNS(SVG_NS, 'circle');
-        c.setAttribute('cx', x.toFixed(1));
-        c.setAttribute('cy', y.toFixed(1));
-        c.setAttribute('r',  r.toFixed(2));
-        c.setAttribute('fill', '#fff');
-        c.setAttribute('opacity', opacity.toFixed(2));
-        dust.appendChild(c);
+        // Scale density to area. Floor protects narrow phones from looking
+        // sparse — at the mobile floor the exclusion zone takes most of the
+        // central area, so we need extra particles to fill the surrounding
+        // halo properly. Cap protects wide monitors from looking like a
+        // snowstorm.
+        const N_PARTICLES = Math.max(300, Math.min(540, Math.round(W * H * 0.0013)));
+        for (let i = 0; i < N_PARTICLES; i++) {
+          // Up to 12 attempts to land outside the brand-mark exclusion zone.
+          // Particles biased to center will pile up just outside the mark,
+          // creating a halo of dust framing the letters.
+          let x = 0, y = 0, ok = false;
+          for (let t = 0; t < 12; t++) {
+            if (Math.random() < 0.78) {
+              x = biased(W, 0.16);
+              y = biased(H, 0.20);
+            } else {
+              x = Math.random() * W;
+              y = Math.random() * H;
+            }
+            if (!inExclusion(x, y)) { ok = true; break; }
+          }
+          if (!ok) continue;
+
+          const t = Math.random();
+          let r;
+          if (t < 0.55)      r = 0.55 + Math.random() * 0.70; // fine grit
+          else if (t < 0.85) r = 1.25 + Math.random() * 1.00; // small flecks
+          else if (t < 0.97) r = 2.25 + Math.random() * 1.25; // medium specks
+          else               r = 3.50 + Math.random() * 1.80; // a few bigger
+
+          const opacity = 0.35 + Math.random() * 0.6;
+          const c = document.createElementNS(SVG_NS, 'circle');
+          c.setAttribute('cx', x.toFixed(1));
+          c.setAttribute('cy', y.toFixed(1));
+          c.setAttribute('r',  r.toFixed(2));
+          c.setAttribute('fill', '#fff');
+          c.setAttribute('opacity', opacity.toFixed(2));
+          dust.appendChild(c);
+        }
+
+        // A handful of tiny 4-pointed stars for sparkle. Same exclusion rule.
+        // Floor of 8 ensures even narrow phones get visible sparkles around
+        // the brand mark.
+        const N_STARS = Math.max(8, Math.min(13, Math.round(W / 170)));
+        const xMargin = Math.min(60, W * 0.08);
+        const yMargin = Math.min(40, H * 0.15);
+        const xRange = Math.max(1, W - 2 * xMargin);
+        const yRange = Math.max(1, H - 2 * yMargin);
+        for (let i = 0; i < N_STARS; i++) {
+          let x = 0, y = 0, ok = false;
+          for (let t = 0; t < 12; t++) {
+            x = xMargin + Math.random() * xRange;
+            y = yMargin + Math.random() * yRange;
+            if (!inExclusion(x, y)) { ok = true; break; }
+          }
+          if (!ok) continue;
+          const s = 5.5 + Math.random() * 4.0;
+          const k = s * 0.28;
+          const star = document.createElementNS(SVG_NS, 'path');
+          star.setAttribute('d',
+            `M${x.toFixed(1)} ${(y - s).toFixed(1)} ` +
+            `L${(x + k).toFixed(1)} ${(y - k).toFixed(1)} ` +
+            `L${(x + s).toFixed(1)} ${y.toFixed(1)} ` +
+            `L${(x + k).toFixed(1)} ${(y + k).toFixed(1)} ` +
+            `L${x.toFixed(1)} ${(y + s).toFixed(1)} ` +
+            `L${(x - k).toFixed(1)} ${(y + k).toFixed(1)} ` +
+            `L${(x - s).toFixed(1)} ${y.toFixed(1)} ` +
+            `L${(x - k).toFixed(1)} ${(y - k).toFixed(1)} Z`);
+          star.setAttribute('fill', '#fff');
+          star.setAttribute('opacity', (0.55 + Math.random() * 0.4).toFixed(2));
+          dust.appendChild(star);
+        }
       }
 
-      // A handful of tiny 4-pointed stars for a touch of sparkle.
-      const N_STARS = 9;
-      for (let i = 0; i < N_STARS; i++) {
-        const x = 60 + Math.random() * (W - 120);
-        const y = 40 + Math.random() * (H - 80);
-        const s = 3.5 + Math.random() * 2.5;
-        const k = s * 0.28;
-        const star = document.createElementNS(SVG_NS, 'path');
-        star.setAttribute('d',
-          `M${x.toFixed(1)} ${(y - s).toFixed(1)} ` +
-          `L${(x + k).toFixed(1)} ${(y - k).toFixed(1)} ` +
-          `L${(x + s).toFixed(1)} ${y.toFixed(1)} ` +
-          `L${(x + k).toFixed(1)} ${(y + k).toFixed(1)} ` +
-          `L${x.toFixed(1)} ${(y + s).toFixed(1)} ` +
-          `L${(x - k).toFixed(1)} ${(y + k).toFixed(1)} ` +
-          `L${(x - s).toFixed(1)} ${y.toFixed(1)} ` +
-          `L${(x - k).toFixed(1)} ${(y - k).toFixed(1)} Z`);
-        star.setAttribute('fill', '#fff');
-        star.setAttribute('opacity', (0.55 + Math.random() * 0.4).toFixed(2));
-        dust.appendChild(star);
-      }
+      // Re-render on resize / orientation change / font swap. Observe both
+      // the stage AND the brand mark — when Heebo finishes loading, the mark
+      // changes width even if the stage height doesn't, and we need to
+      // recompute the exclusion zone from the final glyph metrics.
+      let resizeTimer;
+      const observer = new ResizeObserver(() => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(render, 180);
+      });
+      observer.observe(stage);
+      const markEl = document.querySelector('.brand .mark');
+      const taglineEl = document.querySelector('.brand .tagline');
+      if (markEl) observer.observe(markEl);
+      if (taglineEl) observer.observe(taglineEl);
     })();
 
     const dropzone = document.getElementById('dropzone');
@@ -470,6 +579,87 @@
       return name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.doc');
     }
 
+    // Two upload paths share this dispatcher:
+    //
+    //   - Direct multipart (HF + local dev): one POST to /api/convert with
+    //     the file in the form body.
+    //   - Presigned S3 (AWS Lambda deploy): three steps — get a presigned
+    //     PUT URL, browser PUTs the file directly to S3, then POST a
+    //     {key} reference to /api/convert-s3 to trigger conversion.
+    //
+    // The Lambda-flavored index.html sets window.__UPLOAD_VIA_S3 = true
+    // (see infra/README.md for the deploy-time patch). The HF index.html
+    // leaves it unset, falling back to direct multipart.
+    const UPLOAD_VIA_S3 = window.__UPLOAD_VIA_S3 === true;
+
+    function _triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function _filenameFromResponse(response, fallback) {
+      const cd = response.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
+      if (m && m[1]) {
+        try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+      }
+      return fallback;
+    }
+
+    async function _readError(response) {
+      let msg = `שגיאה (${response.status})`;
+      try {
+        const data = await response.json();
+        if (data && data.detail) msg = data.detail;
+      } catch {}
+      return msg;
+    }
+
+    async function _convertDirect(file) {
+      setStatus('info', 'מעבד את הקובץ<span class="spinner"></span>');
+      const form = new FormData();
+      form.append('file', file);
+      return fetch('/api/convert', { method: 'POST', body: form });
+    }
+
+    async function _convertViaPresign(file) {
+      // 1. Ask the API for a presigned PUT URL for this filename.
+      setStatus('info', 'מכין העלאה<span class="spinner"></span>');
+      const r1 = await fetch('/api/upload-url', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ filename: file.name }),
+      });
+      if (!r1.ok) return r1; // dispatcher will surface the error
+      const { key, url } = await r1.json();
+
+      // 2. Browser PUTs the file directly to S3 — bypasses the Function URL
+      //    request-body ceiling, so we can accept up to 25 MB instead of 6 MB.
+      setStatus('info', 'מעלה את הקובץ<span class="spinner"></span>');
+      const putRes = await fetch(url, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: file,
+      });
+      if (!putRes.ok) {
+        throw new Error(`S3 upload failed (${putRes.status})`);
+      }
+
+      // 3. Tell the API to fetch what we just uploaded and convert it.
+      setStatus('info', 'מעבד את הקובץ<span class="spinner"></span>');
+      return fetch('/api/convert-s3', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, filename: file.name }),
+      });
+    }
+
     async function upload(file) {
       if (inFlight) return;
       if (!isAcceptable(file)) {
@@ -481,42 +671,23 @@
         return;
       }
       setBusy(true);
-      setStatus('info', 'מנתחים את הסצנה<span class="spinner"></span>');
-
-      const form = new FormData();
-      form.append('file', file);
 
       try {
-        const response = await fetch('/api/convert', { method: 'POST', body: form });
+        const response = UPLOAD_VIA_S3
+          ? await _convertViaPresign(file)
+          : await _convertDirect(file);
+
         if (!response.ok) {
-          let msg = `שגיאה (${response.status})`;
-          try {
-            const data = await response.json();
-            if (data && data.detail) msg = data.detail;
-          } catch {}
-          setStatus('error', msg);
+          setStatus('error', await _readError(response));
           return;
         }
 
-        // Pull the filename out of the Content-Disposition header if present.
-        let filename = file.name.replace(/\.(pdf|docx|doc)$/i, '') + ' - ניתוח.pdf';
-        const cd = response.headers.get('Content-Disposition') || '';
-        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
-        if (m && m[1]) {
-          try { filename = decodeURIComponent(m[1]); } catch { filename = m[1]; }
-        }
-
+        const fallback = file.name.replace(/\.(pdf|docx|doc)$/i, '') + ' - ניתוח.pdf';
+        const filename = _filenameFromResponse(response, fallback);
         const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
+        _triggerDownload(blob, filename);
 
-        setStatus('success', '✓ הניתוח מוכן והורד אליכם');
+        setStatus('success', '✓ הטבלה מוכנה. בהצלחה בניתוח!');
       } catch (err) {
         setStatus('error', 'שגיאת רשת: ' + (err && err.message ? err.message : err));
       } finally {

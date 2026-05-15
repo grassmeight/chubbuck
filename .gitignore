@@ -31,3 +31,24 @@ Screenshot*.png
 # Local dev scripts (not needed in deployed image)
 debug_parser.py
 test_*.py
+
+# Debug / scratch artifacts (underscore-prefix convention, broader than the
+# data-file patterns above)
+_debug*
+_inspect/
+_lambda_*
+_w7_*
+
+# Terraform local state — never commit. State has resource IDs/account info
+# and can lock or be corrupted by shared edits. terraform.tfvars holds local
+# overrides (may include secrets); only example.tfvars is tracked.
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/terraform.tfvars
+infra/terraform.tfvars.json
+infra/crash.log
+infra/crash.*.log
+# Built static page artifact (patched index.html for CloudFront upload —
+# regenerated on every deploy, never source-of-truth).
+infra/dist/

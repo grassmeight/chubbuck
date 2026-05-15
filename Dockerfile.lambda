@@ -1,0 +1,72 @@
+# Lambda image for the Chubbuck scene analyzer.
+#
+# Uses Debian Bookworm rather than the AWS-provided Python base image because
+# Amazon Linux 2023's default repos don't ship LibreOffice. Debian's apt has
+# everything we need (LibreOffice + Carlito + Noto Hebrew, same packages as
+# the HF Space deploy), and Lambda doesn't care which distro the image is
+# built on as long as we install the AWS Lambda Runtime Interface Client
+# (awslambdaric) and configure the standard ENTRYPOINT/CMD.
+#
+# Architecture: x86_64. Builds natively on x86 Windows (~3 min) instead of
+# under QEMU emulation for arm64 (~20 min). The Graviton GB-s discount is
+# ~$0.03/mo at this volume — not worth the build-time cost.
+FROM debian:bookworm-slim
+
+# Full LibreOffice metapackage + the same fonts as the HF deploy.
+# Why the full metapackage instead of just libreoffice-calc: the minimal
+# install renders xlsx → pdf with cell rows that are too short (the row
+# auto-fit pass uses different geometry helpers in the full install). The
+# extra ~150 MB is fine — image stays well under Lambda's 10 GB limit and
+# under ECR's free-tier rounding boundary.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libreoffice \
+        fonts-noto-core \
+        fonts-crosextra-carlito \
+        fontconfig \
+        python3 python3-pip \
+        ca-certificates \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+# Lambda Runtime Interface Client + boto3 — both bundled in AWS's official
+# Lambda Python image but absent from Debian. awslambdaric handles the
+# Lambda invocation protocol; boto3 is needed by app/handler.py for the
+# warm-pool fan-out (self-invocation) and by app/main.py for S3 presigned
+# URL generation + GetObject in the convert-s3 path.
+#
+# --break-system-packages: PEP 668 compliance. Debian Bookworm marks the
+# system Python as externally-managed, but in a single-purpose container
+# that distinction doesn't matter and the alternative (a venv) just adds
+# moving parts.
+RUN pip3 install --no-cache-dir --break-system-packages awslambdaric boto3
+
+# Standard Lambda paths. awslambdaric reads LAMBDA_TASK_ROOT and adds it to
+# sys.path so the handler module is importable.
+ENV LAMBDA_TASK_ROOT=/var/task
+WORKDIR /var/task
+
+# App dependencies.
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+
+# App code + analysis template. JSON-array COPY form handles the Hebrew
+# filename safely without shell expansion.
+COPY app/ /var/task/app/
+COPY ["טבלת ניתוחים ריקה.xlsx", "/var/task/"]
+
+# LibreOffice writes its profile + font cache to $HOME on first run.
+# Only /tmp is writable in Lambda; redirect both vars defensively.
+ENV HOME=/tmp \
+    TMPDIR=/tmp
+
+# Server-side upload cap. Matches dev/HF default — Lambda accepts up to 25 MB
+# via the presigned-S3 path (bypasses the Function URL 6 MB request body cap).
+ENV MAX_UPLOAD_MB=25
+
+# Sanity check that LibreOffice installed correctly.
+RUN soffice --headless --version
+
+# Runtime entry. awslambdaric handles the Lambda invocation protocol;
+# the CMD argument is the dotted module path to the handler function.
+ENTRYPOINT ["python3", "-m", "awslambdaric"]
+CMD ["app.handler.lambda_handler"]

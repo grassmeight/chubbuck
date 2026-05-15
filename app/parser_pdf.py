@@ -138,7 +138,8 @@ def _extract_logical_lines(pdf_path: Path) -> list[LogicalLine]:
                 x1 = tl["x1"]
                 underlined = _line_underlined(top, bottom, x0, x1, underlines) if bold else False
                 centered = _is_centered(x0, x1, page_width) if bold else False
-                logical_text = clean(get_display(raw_text, base_dir='R'))
+                logical_text = clean(get_display(raw_text, base_dir='R'),
+                                     fix_pdf_split_hebrew=True)
                 out.append(LogicalLine(
                     text=logical_text.strip(),
                     bold=bold,

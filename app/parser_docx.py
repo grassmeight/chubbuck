@@ -146,27 +146,65 @@ def _paragraph_centered(paragraph) -> bool:
     return val == WD_ALIGN_PARAGRAPH.CENTER
 
 
+def _split_paragraph_into_segments(para):
+    """Split a paragraph at soft line breaks into segments, each with its
+    own per-run formatting.
+
+    Real-world Hebrew screenplays from Word commonly encode each speaker
+    turn as a single paragraph shaped like
+        <bold+underlined name run>  <w:br/>  <regular dialogue run>
+    The <w:br/> is exposed by python-docx as a literal '\n' inside the run
+    text. Treating the whole paragraph as one logical line collapses the
+    name into the dialogue (and loses its bold+underline classification),
+    so we split on those soft breaks before classification.
+
+    Returns a list of segments; each segment is a list of (text_chunk,
+    bold, underlined) tuples.
+    """
+    segments: list[list[tuple[str, bool, bool]]] = []
+    current: list[tuple[str, bool, bool]] = []
+
+    def flush() -> None:
+        if current:
+            segments.append(list(current))
+        current.clear()
+
+    for run in para.runs:
+        if not run.text:
+            continue
+        b = _run_bold(run, para)
+        u = _run_underlined(run, para)
+        chunks = run.text.split("\n")
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                flush()
+            if chunk:
+                current.append((chunk, b, u))
+    flush()
+    return segments
+
+
 def _extract_logical_lines(docx_path: Path) -> list[LogicalLine]:
     doc = Document(str(docx_path))
     out: list[LogicalLine] = []
     for para in doc.paragraphs:
-        text = para.text
-        if not text.strip():
+        if not para.text.strip():
             continue
-        runs = [r for r in para.runs if r.text.strip()]
-        if not runs:
-            continue
-        # A line counts as bold/underlined when *every* non-whitespace run
-        # carries that property (matches the visual rule: a name is solidly
-        # bold + underlined; mixed-format paragraphs are dialogue).
-        bold = all(_run_bold(r, para) for r in runs)
-        underlined = all(_run_underlined(r, para) for r in runs) if bold else False
-        out.append(LogicalLine(
-            text=clean(text.strip()),
-            bold=bold,
-            underlined=underlined,
-            centered=_paragraph_centered(para),
-        ))
+        for segment in _split_paragraph_into_segments(para):
+            text = "".join(c for c, _, _ in segment).strip()
+            if not text:
+                continue
+            # A segment counts as bold/underlined when every chunk that
+            # contributed non-whitespace text carries that property.
+            non_ws = [(c, b, u) for c, b, u in segment if c.strip()]
+            bold = all(b for _, b, _ in non_ws) if non_ws else False
+            underlined = all(u for _, _, u in non_ws) if (bold and non_ws) else False
+            out.append(LogicalLine(
+                text=clean(text),
+                bold=bold,
+                underlined=underlined,
+                centered=_paragraph_centered(para),
+            ))
     return out
 
 
