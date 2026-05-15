@@ -1,0 +1,110 @@
+name: Deploy to Lambda
+
+# Triggers a build + ECR push + Lambda update on every push to main.
+# `workflow_dispatch` lets you re-run the deploy manually from the Actions
+# tab without pushing a no-op commit.
+#
+# Setup (one-time):
+#   1. Provision the OIDC role: set `github_repo` in infra/terraform.tfvars,
+#      `terraform apply` in infra/, and copy the `github_actions_role_arn`
+#      output.
+#   2. Add that ARN as a GitHub repository variable named AWS_ROLE_ARN
+#      (Settings → Secrets and variables → Actions → Variables).
+#   3. Push to main.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# OIDC requires `id-token: write`; `contents: read` is the default for
+# checkout. Everything else is denied by default.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: chubbuck
+  LAMBDA_FUNCTION: chubbuck
+
+# Concurrency: a second push while a deploy is in-flight cancels the older
+# run (its image would be superseded anyway). Prevents two parallel
+# `update-function-code` calls from racing.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build, push, and update Lambda
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE_SHA="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::7}"
+          IMAGE_LATEST="$REGISTRY/$ECR_REPOSITORY:latest"
+
+          # --provenance=false, --sbom=false: Lambda's UpdateFunctionCode
+          # rejects the OCI attestation manifests that modern buildx produces
+          # by default ("image manifest, config or layer media type for the
+          # source image ... is not supported"). These flags fall back to the
+          # Docker v2 manifest format Lambda accepts.
+          docker buildx build \
+            --provenance=false \
+            --sbom=false \
+            --platform linux/amd64 \
+            --push \
+            --tag "$IMAGE_SHA" \
+            --tag "$IMAGE_LATEST" \
+            --file Dockerfile.lambda \
+            .
+
+          echo "IMAGE_URI=$IMAGE_SHA" >> "$GITHUB_ENV"
+
+      - name: Update Lambda function code
+        run: |
+          aws lambda update-function-code \
+            --function-name "$LAMBDA_FUNCTION" \
+            --image-uri "$IMAGE_URI" \
+            --no-cli-pager \
+            > /dev/null
+
+      - name: Wait for update to complete
+        run: |
+          # The CLI's built-in waiter polls LastUpdateStatus until it leaves
+          # InProgress. Fails the job on a non-Successful terminal status.
+          aws lambda wait function-updated \
+            --function-name "$LAMBDA_FUNCTION"
+
+          STATUS=$(aws lambda get-function-configuration \
+            --function-name "$LAMBDA_FUNCTION" \
+            --query 'LastUpdateStatus' --output text)
+          echo "Lambda LastUpdateStatus: $STATUS"
+          if [ "$STATUS" != "Successful" ]; then
+            REASON=$(aws lambda get-function-configuration \
+              --function-name "$LAMBDA_FUNCTION" \
+              --query 'LastUpdateStatusReason' --output text)
+            echo "::error::Lambda update did not succeed: $STATUS — $REASON"
+            exit 1
+          fi
