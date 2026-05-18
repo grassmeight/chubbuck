@@ -45,85 +45,35 @@
       -moz-osx-font-smoothing: grayscale;
     }
 
-    /* Drenched magenta hero. The dust SVG is generated in JS on load — many
-       small white particles biased toward the brand mark, with a few small
-       4-pointed stars mixed in (echoes the logo's letters-made-of-dust).
-       Layered background: warm spotlight behind the brand mark + warm
-       footlight wash along the bottom + a subtle vertical depth gradient.
-       Suggests stage lighting without being a theater cliché. */
-    .stage {
-      background:
-        radial-gradient(ellipse 70% 28% at 50% 100%,
-          oklch(0.78 0.22 32 / 0.45), transparent 72%),
-        radial-gradient(ellipse 58% 78% at 50% 36%,
-          oklch(0.84 0.16 22 / 0.42), transparent 68%),
-        linear-gradient(180deg,
-          oklch(0.52 0.26 5),
-          var(--magenta) 38%,
-          var(--magenta) 62%,
-          oklch(0.50 0.25 5));
-      color: var(--paper);
-      padding: 80px 24px 104px;
-      position: relative;
+    /* The wide logo IS the hero. Fixed at 1/3 viewport height, full
+       viewport width. object-fit:contain shows the whole logo centered
+       (both 'צ'בק' and the tagline stay visible); the hero background
+       is the EXACT magenta sampled from the logo PNG (#C33552), so the
+       letterboxed sides on wide viewports blend seamlessly into the
+       logo — no visible color seam. */
+    /* 1/3 viewport height, full viewport width, brand mark dead-center.
+       The PNG itself is padded with the same magenta out to a 5.33:1
+       aspect — object-fit: cover crops only the flat-magenta padding,
+       never the brand mark, on any viewport aspect. The brand stays
+       visually centered because the padding is symmetric. */
+    .hero {
+      background: #C33552;
+      width: 100%;
+      height: 33vh;
       overflow: hidden;
-      isolation: isolate;
+      line-height: 0;
     }
-    .dust {
-      position: absolute;
-      inset: 0;
+    .hero-logo {
+      display: block;
       width: 100%;
       height: 100%;
-      z-index: 0;
-      pointer-events: none;
-    }
-
-    .brand {
-      max-width: 720px;
-      margin: 0 auto;
-      text-align: center;
-      position: relative;
-      z-index: 1;
-    }
-    .brand .mark {
-      font-family: 'Heebo', sans-serif;
-      font-weight: 900;
-      font-size: clamp(80px, 15vw, 168px);
-      line-height: 0.88;
-      letter-spacing: -0.045em;
-      margin: 0 0 22px;
-      color: var(--paper);
-      /* Soft warm halo + a hint of depth — reads as lit, not flat-printed. */
-      text-shadow:
-        0 0 64px oklch(0.88 0.16 28 / 0.42),
-        0 0 18px oklch(0.95 0.08 30 / 0.30),
-        0 2px 0 oklch(0.34 0.20 5 / 0.22);
-    }
-    .brand .tagline {
-      font-family: 'Assistant', sans-serif;
-      font-size: 14px;
-      font-weight: 500;
-      letter-spacing: 0.22em;
-      opacity: 0.92;
-      margin: 0;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.9em;
-    }
-    .brand .tagline::before,
-    .brand .tagline::after {
-      content: "";
-      display: inline-block;
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: currentColor;
-      opacity: 0.55;
-      flex-shrink: 0;
+      object-fit: cover;
+      object-position: center;
     }
 
     main {
       max-width: 660px;
-      margin: -64px auto 0;
+      margin: 36px auto 0;
       padding: 0 24px 88px;
       position: relative;
       z-index: 2;
@@ -275,20 +225,8 @@
        the width) and a tighter panel. Also: respect the bottom safe-area
        inset on notched devices so the footer note isn't under the home bar. */
     @media (max-width: 600px) {
-      .stage {
-        padding: calc(20px + env(safe-area-inset-top, 0px)) 18px 64px;
-      }
-      .brand .mark {
-        font-size: clamp(64px, 18vw, 92px);
-        margin-bottom: 12px;
-        letter-spacing: -0.04em;
-      }
-      .brand .tagline {
-        font-size: 12px;
-        letter-spacing: 0.18em;
-      }
       main {
-        margin-top: -48px;
+        margin-top: 24px;
         padding: 0 18px calc(56px + env(safe-area-inset-bottom, 0px));
       }
       .panel {
@@ -332,10 +270,8 @@
 
     /* Narrow phones (iPhone SE-class and smaller). */
     @media (max-width: 380px) {
-      .stage { padding: 16px 14px 56px; }
-      .brand .mark { font-size: 60px; margin-bottom: 10px; }
       main {
-        margin-top: -40px;
+        margin-top: 18px;
         padding: 0 14px calc(48px + env(safe-area-inset-bottom, 0px));
       }
       .panel { padding: 24px 16px 20px; border-radius: 16px; }
@@ -358,12 +294,9 @@
 </head>
 <body>
 
-  <header class="stage">
-    <svg class="dust" aria-hidden="true" preserveAspectRatio="xMidYMid slice"></svg>
-    <div class="brand">
-      <h1 class="mark">צ'בק</h1>
-      <p class="tagline">טכניקת צ'בק בישראל</p>
-    </div>
+  <header class="hero">
+    <img class="hero-logo" src="logo-chubbuck-wide.png"
+         alt="צ'בק · טכניקת צ'בק בישראל">
   </header>
 
   <main>
@@ -406,154 +339,6 @@
   </main>
 
   <script>
-    /* Generate the dust texture for the hero. White particles + a few stars,
-       biased toward the brand mark. The viewBox is sized 1:1 with the stage's
-       actual CSS dimensions so particle radii render at their intended pixel
-       size on every viewport — the previous fixed 1200x500 viewBox got
-       slice-scaled to ~0.4x on mobile, making the particles sub-pixel. */
-    (function setupDust() {
-      const stage = document.querySelector('.stage');
-      const dust  = document.querySelector('.dust');
-      if (!stage || !dust) return;
-      const SVG_NS = 'http://www.w3.org/2000/svg';
-
-      // Triangular distribution sum-of-uniforms — peaks at center, tapers off.
-      function biased(extent, sigma) {
-        const r = (Math.random() + Math.random() + Math.random() - 1.5) * sigma;
-        return Math.max(0, Math.min(extent, extent * 0.5 + r * extent));
-      }
-
-      function render() {
-        const stageRect = stage.getBoundingClientRect();
-        const W = Math.max(1, Math.round(stageRect.width));
-        const H = Math.max(1, Math.round(stageRect.height));
-
-        // Exclusion zones — dust frames the brand text, doesn't sit on it.
-        // Always exclude the brand mark. On mobile (<600px) also exclude the
-        // tagline: the hero is small and the dust is denser, so without this
-        // particles crowd the tagline. On desktop the wide hero gives the
-        // tagline plenty of natural breathing room.
-        const excludeSelectors = ['.brand .mark'];
-        if (window.innerWidth < 600) excludeSelectors.push('.brand .tagline');
-        const exclusions = excludeSelectors
-          .map(sel => document.querySelector(sel))
-          .filter(el => {
-            if (!el) return false;
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-          })
-          .map(el => {
-            const r = el.getBoundingClientRect();
-            const padX = Math.max(8, r.width  * 0.04);
-            const padY = Math.max(8, r.height * 0.06);
-            return {
-              x1: (r.left   - stageRect.left) - padX,
-              y1: (r.top    - stageRect.top)  - padY,
-              x2: (r.right  - stageRect.left) + padX,
-              y2: (r.bottom - stageRect.top)  + padY,
-            };
-          });
-        function inExclusion(x, y) {
-          for (let i = 0; i < exclusions.length; i++) {
-            const e = exclusions[i];
-            if (x >= e.x1 && x <= e.x2 && y >= e.y1 && y <= e.y2) return true;
-          }
-          return false;
-        }
-
-        dust.setAttribute('viewBox', `0 0 ${W} ${H}`);
-        dust.replaceChildren();
-
-        // Scale density to area. Floor protects narrow phones from looking
-        // sparse — at the mobile floor the exclusion zone takes most of the
-        // central area, so we need extra particles to fill the surrounding
-        // halo properly. Cap protects wide monitors from looking like a
-        // snowstorm.
-        const N_PARTICLES = Math.max(300, Math.min(540, Math.round(W * H * 0.0013)));
-        for (let i = 0; i < N_PARTICLES; i++) {
-          // Up to 12 attempts to land outside the brand-mark exclusion zone.
-          // Particles biased to center will pile up just outside the mark,
-          // creating a halo of dust framing the letters.
-          let x = 0, y = 0, ok = false;
-          for (let t = 0; t < 12; t++) {
-            if (Math.random() < 0.78) {
-              x = biased(W, 0.16);
-              y = biased(H, 0.20);
-            } else {
-              x = Math.random() * W;
-              y = Math.random() * H;
-            }
-            if (!inExclusion(x, y)) { ok = true; break; }
-          }
-          if (!ok) continue;
-
-          const t = Math.random();
-          let r;
-          if (t < 0.55)      r = 0.55 + Math.random() * 0.70; // fine grit
-          else if (t < 0.85) r = 1.25 + Math.random() * 1.00; // small flecks
-          else if (t < 0.97) r = 2.25 + Math.random() * 1.25; // medium specks
-          else               r = 3.50 + Math.random() * 1.80; // a few bigger
-
-          const opacity = 0.35 + Math.random() * 0.6;
-          const c = document.createElementNS(SVG_NS, 'circle');
-          c.setAttribute('cx', x.toFixed(1));
-          c.setAttribute('cy', y.toFixed(1));
-          c.setAttribute('r',  r.toFixed(2));
-          c.setAttribute('fill', '#fff');
-          c.setAttribute('opacity', opacity.toFixed(2));
-          dust.appendChild(c);
-        }
-
-        // A handful of tiny 4-pointed stars for sparkle. Same exclusion rule.
-        // Floor of 8 ensures even narrow phones get visible sparkles around
-        // the brand mark.
-        const N_STARS = Math.max(8, Math.min(13, Math.round(W / 170)));
-        const xMargin = Math.min(60, W * 0.08);
-        const yMargin = Math.min(40, H * 0.15);
-        const xRange = Math.max(1, W - 2 * xMargin);
-        const yRange = Math.max(1, H - 2 * yMargin);
-        for (let i = 0; i < N_STARS; i++) {
-          let x = 0, y = 0, ok = false;
-          for (let t = 0; t < 12; t++) {
-            x = xMargin + Math.random() * xRange;
-            y = yMargin + Math.random() * yRange;
-            if (!inExclusion(x, y)) { ok = true; break; }
-          }
-          if (!ok) continue;
-          const s = 5.5 + Math.random() * 4.0;
-          const k = s * 0.28;
-          const star = document.createElementNS(SVG_NS, 'path');
-          star.setAttribute('d',
-            `M${x.toFixed(1)} ${(y - s).toFixed(1)} ` +
-            `L${(x + k).toFixed(1)} ${(y - k).toFixed(1)} ` +
-            `L${(x + s).toFixed(1)} ${y.toFixed(1)} ` +
-            `L${(x + k).toFixed(1)} ${(y + k).toFixed(1)} ` +
-            `L${x.toFixed(1)} ${(y + s).toFixed(1)} ` +
-            `L${(x - k).toFixed(1)} ${(y + k).toFixed(1)} ` +
-            `L${(x - s).toFixed(1)} ${y.toFixed(1)} ` +
-            `L${(x - k).toFixed(1)} ${(y - k).toFixed(1)} Z`);
-          star.setAttribute('fill', '#fff');
-          star.setAttribute('opacity', (0.55 + Math.random() * 0.4).toFixed(2));
-          dust.appendChild(star);
-        }
-      }
-
-      // Re-render on resize / orientation change / font swap. Observe both
-      // the stage AND the brand mark — when Heebo finishes loading, the mark
-      // changes width even if the stage height doesn't, and we need to
-      // recompute the exclusion zone from the final glyph metrics.
-      let resizeTimer;
-      const observer = new ResizeObserver(() => {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(render, 180);
-      });
-      observer.observe(stage);
-      const markEl = document.querySelector('.brand .mark');
-      const taglineEl = document.querySelector('.brand .tagline');
-      if (markEl) observer.observe(markEl);
-      if (taglineEl) observer.observe(taglineEl);
-    })();
-
     const dropzone = document.getElementById('dropzone');
     const fileInput = document.getElementById('fileInput');
     const statusEl = document.getElementById('status');

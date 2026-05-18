@@ -27,26 +27,31 @@ TEMPLATE_LAST_ROW = 125
 # Header is rows 1-4. R3 is bumped from the template's 111pt to 174pt by
 # _spread_numbered_list_cell (see there for why). Total header occupies the
 # top of page 1 and is subtracted from page 1's data budget in the page-break
-# walker; page 2+ get the full _PAGE_CONTENT_HEIGHT_PT.
-# R1=27 + R2=42 + R3=174 + R4=56.25 = 299.25pt
-HEADER_ROWS_HEIGHT_PT = 299.25
+# walker; page 2+ get the full page_content_height_pt.
+# R1=52.5 + R2=42 + R3=174 + R4=56.25 = 324.75pt
+HEADER_ROWS_HEIGHT_PT = 324.75
 _NUMBERED_LIST_R3_HEIGHT_PT = 174.0
 
 # Print scale (whole percent). Page setup forces this exact scale (rather
 # than fit-to-width auto-scale) so the per-page vertical budget below is
 # predictable. Calibrated empirically: at narrow margins (0.25" L/R), the
-# template's natural column widths (A-M, no widening, no hiding) start
-# overflowing the A4-landscape page width somewhere between scale 61 and 67;
-# 61% leaves a small horizontal safety margin. If you change this, also
-# update _PAGE_CONTENT_HEIGHT_PT (= 487 / scale).
-_PRINT_SCALE_PCT = 61
+# template's natural column widths (A-M, no widening, no hiding) overflow
+# the A4-landscape page width at scale 57+ on the current template —
+# every page beyond that gets a phantom right-overflow page tacked on
+# (just the M-column 'מכשולים' header + a grid line). The header page
+# in particular needs slightly more margin than data pages because the
+# merged D2:E3 numbered-list cell and the E4:M4 label band have wider
+# effective content. 55% leaves a 1pt safety margin below the empirical
+# 56% threshold. If you change this, also update page_content_height_pt
+# in _layout_profile (= 487 / scale).
+_PRINT_SCALE_PCT = 55
 
-# Per-page vertical budget for content rows. A4 landscape is 595pt tall;
-# with 0.75" T+B margins (108pt total) the usable height is 487pt physical.
-# At _PRINT_SCALE_PCT=61%, that's 487 / 0.61 ≈ 798pt of logical row-height
-# room per page. The page-break walker uses this as the hard cap and inserts
-# manual breaks before any row that would overflow.
-_PAGE_CONTENT_HEIGHT_PT = 798.0
+# Per-page vertical budget for content rows. Theoretical max derivation:
+# A4 landscape = 595pt tall; minus 0.75" T+B margins (108pt) = 487pt
+# physical usable; at _PRINT_SCALE_PCT=61% that's 487 / 0.61 ≈ 798pt of
+# logical row-height room per page. Read from _layout_profile() — Carlito
+# uses the full 798pt, Noto uses ~5% less to absorb metric drift that was
+# clipping multi-line stage_directions at the bottom of pages.
 
 # Empirical layout numbers tuned to the template (Calibri 16, column B width
 # 52.71). Hebrew text at this column width and font size wraps at roughly this
@@ -79,6 +84,11 @@ def _layout_profile() -> dict:
             "dialogue_long_pad": 14.0,
             "stage_short_pad": 6.0,
             "stage_long_pad": 10.0,
+            # Noto undercounts real render height; multi-line stage_directions
+            # at the bottom of a page were getting clipped mid-character.
+            # ~5% buffer below the theoretical 886pt budget (at 55% scale)
+            # eliminates the overflow without losing meaningful rows.
+            "page_content_height_pt": 842.0,
         }
     return {
         "chars_per_line": 50,
@@ -88,6 +98,8 @@ def _layout_profile() -> dict:
         "dialogue_long_pad": 10.0,
         "stage_short_pad": 4.0,
         "stage_long_pad": 6.0,
+        # 487pt physical usable / 0.55 scale ≈ 886pt logical per page.
+        "page_content_height_pt": 886.0,
     }
 
 
@@ -169,6 +181,7 @@ def _set_page_breaks_keeping_name_with_dialogue(ws, items: list[dict]) -> None:
     LibreOffice won't insert any natural page breaks of its own — so the page
     break pattern is fully deterministic from this calculation.
     """
+    page_budget = _layout_profile()["page_content_height_pt"]
     breaks: list[int] = []  # row numbers AFTER which to break
     current_y = HEADER_ROWS_HEIGHT_PT  # page 1 starts with the header
 
@@ -189,7 +202,7 @@ def _set_page_breaks_keeping_name_with_dialogue(ws, items: list[dict]) -> None:
             unit_h = h + next_h
             unit_size = 2
 
-        if current_y + unit_h > _PAGE_CONTENT_HEIGHT_PT and current_y > HEADER_ROWS_HEIGHT_PT:
+        if current_y + unit_h > page_budget and current_y > HEADER_ROWS_HEIGHT_PT:
             # Doesn't fit on this page -> break before this row.
             breaks.append(row - 1)
             current_y = unit_h
@@ -232,22 +245,38 @@ def _spread_numbered_list_cell(ws) -> None:
     ws.row_dimensions[3].height = _NUMBERED_LIST_R3_HEIGHT_PT
 
 
-def _prepend_leading_blanks_if_no_intro(items: list[dict]) -> list[dict]:
-    """Scenes that open straight on a name (no opening stage direction) look
-    cramped against the header. Reserve the first two rows as empty padding
-    in that case. Items prepended here are rendered as empty cells with the
-    template's default formatting (borders, RTL) and minimum row height.
+def _add_breathing_blanks(items: list[dict]) -> list[dict]:
+    """Insert blank rows for visual breathing room:
+
+    - Always: one blank row at the very top of the output, so content
+      doesn't butt against the header.
+    - When the scene opens on one or more stage_directions (i.e. before
+      the first name), also insert one blank between the opening stage
+      block and the first name. Without this the opening stage paragraph
+      runs straight into the first speaker label.
+
+    Blanks are rendered as empty template-styled cells with minimum row
+    height (see the kind=='blank' branch in fill_template).
     """
-    if items and items[0]["type"] == "name":
-        return [{"type": "blank", "text": ""},
-                {"type": "blank", "text": ""},
-                *items]
-    return items
+    if not items:
+        return items
+    out: list[dict] = [{"type": "blank", "text": ""}]
+    if items[0]["type"] == "stage_direction":
+        i = 0
+        while i < len(items) and items[i]["type"] == "stage_direction":
+            out.append(items[i])
+            i += 1
+        if i < len(items):
+            out.append({"type": "blank", "text": ""})
+        out.extend(items[i:])
+    else:
+        out.extend(items)
+    return out
 
 
 def fill_template(items: list[dict], template_path: str | Path,
                   output_path: str | Path) -> None:
-    items = _prepend_leading_blanks_if_no_intro(items)
+    items = _add_breathing_blanks(items)
     wb = load_workbook(template_path)
     ws = wb.active
 
@@ -321,6 +350,14 @@ def fill_template(items: list[dict], template_path: str | Path,
 
     last_item_row = DATA_START_ROW + len(items) - 1
     _trim_or_extend_rows(ws, last_item_row)
+
+    # Constrain the printable range to A1:M{last_row}. Without this,
+    # LibreOffice was emitting a phantom right-overflow page right after
+    # the header page (just the M-column 'מכשולים' header band wrapped to
+    # its own page). The print_area pins the right edge at column M and
+    # the bottom edge at the last filled row so LO has no excuse to make
+    # extra pages.
+    ws.print_area = f"A1:M{last_item_row}"
 
     for i, item in enumerate(items):
         row = DATA_START_ROW + i
