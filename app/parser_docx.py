@@ -72,6 +72,19 @@ def _underline_from_rpr(rpr) -> bool | None:
     return _underline_toggle(rpr.find(qn("w:u")))
 
 
+def _style_rpr(style):
+    """Return the run-properties element that applies to runs in this style.
+    Paragraph styles nest it at w:pPr/w:rPr; character styles expose w:rPr
+    directly. qn() only handles single namespaced tags, so we walk by hand."""
+    elem = style.element
+    p_pr = elem.find(qn("w:pPr"))
+    if p_pr is not None:
+        nested = p_pr.find(qn("w:rPr"))
+        if nested is not None:
+            return nested
+    return elem.find(qn("w:rPr"))
+
+
 def _style_property(style, getter):
     """Walk a python-docx style + its base_style chain, returning the first
     non-None result from `getter(style)`."""
@@ -112,9 +125,7 @@ def _run_bold(run, paragraph) -> bool:
         s.element.find(qn("w:rPr"))))
     if val is not None:
         return val
-    val = _style_property(paragraph.style, lambda s: _bold_from_rpr(
-        s.element.find(qn("w:pPr/w:rPr")) if s.element.find(qn("w:pPr")) is not None
-        else s.element.find(qn("w:rPr"))))
+    val = _style_property(paragraph.style, lambda s: _bold_from_rpr(_style_rpr(s)))
     return bool(val)
 
 
@@ -127,9 +138,7 @@ def _run_underlined(run, paragraph) -> bool:
         s.element.find(qn("w:rPr"))))
     if val is not None:
         return val
-    val = _style_property(paragraph.style, lambda s: _underline_from_rpr(
-        s.element.find(qn("w:pPr/w:rPr")) if s.element.find(qn("w:pPr")) is not None
-        else s.element.find(qn("w:rPr"))))
+    val = _style_property(paragraph.style, lambda s: _underline_from_rpr(_style_rpr(s)))
     return bool(val)
 
 
