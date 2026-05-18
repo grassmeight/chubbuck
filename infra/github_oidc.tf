@@ -107,6 +107,33 @@ data "aws_iam_policy_document" "github_actions_deploy" {
     ]
     resources = [aws_lambda_function.app.arn]
   }
+
+  # Static-asset sync. The deploy workflow uploads everything in
+  # app/static/ to the static bucket so the CloudFront-fronted UI updates
+  # in lockstep with the Lambda image. `s3:ListBucket` is needed so the
+  # CLI's `aws s3 sync` can diff local-vs-remote before deciding what to
+  # upload; without it, sync falls back to uploading every file every run.
+  statement {
+    sid       = "StaticListBucket"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.static.arn]
+  }
+  statement {
+    sid = "StaticWriteObjects"
+    actions = [
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = ["${aws_s3_bucket.static.arn}/*"]
+  }
+
+  # CloudFront cache invalidation after the S3 sync, so users see the
+  # new HTML/assets immediately instead of waiting on the default TTL.
+  statement {
+    sid       = "CloudFrontInvalidate"
+    actions   = ["cloudfront:CreateInvalidation"]
+    resources = [aws_cloudfront_distribution.main.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "github_actions_deploy" {

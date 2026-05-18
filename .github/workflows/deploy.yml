@@ -27,6 +27,8 @@ env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: chubbuck
   LAMBDA_FUNCTION: chubbuck
+  STATIC_BUCKET: chubbuck-static-344550433882
+  CLOUDFRONT_DISTRIBUTION_ID: ENJIWKRFZYLJD
 
 # Concurrency: a second push while a deploy is in-flight cancels the older
 # run (its image would be superseded anyway). Prevents two parallel
@@ -108,3 +110,35 @@ jobs:
             echo "::error::Lambda update did not succeed: $STATUS — $REASON"
             exit 1
           fi
+
+      - name: Sync static assets to S3
+        run: |
+          # CloudFront's default behavior routes / to this bucket; /api/*
+          # routes to the Lambda Function URL. Without this sync, the
+          # Lambda gets the new code but users see the old HTML.
+          #
+          # --delete removes objects in the bucket that aren't in app/static/
+          # so renamed/removed assets don't linger. Safe because the bucket
+          # only holds files copied from this directory.
+          aws s3 sync app/static/ "s3://$STATIC_BUCKET/" \
+            --delete \
+            --cache-control "public, max-age=86400" \
+            --exclude "*.html"
+          # HTML separately with no-cache, so users always see the latest
+          # markup without waiting for the asset TTL to expire.
+          aws s3 sync app/static/ "s3://$STATIC_BUCKET/" \
+            --exclude "*" --include "*.html" \
+            --cache-control "no-cache" \
+            --content-type "text/html; charset=utf-8"
+
+      - name: Invalidate CloudFront cache
+        run: |
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/*" \
+            --query 'Invalidation.Id' --output text)
+          echo "Created invalidation $INVALIDATION_ID"
+          # Don't wait for completion — invalidations finish in 1–5min,
+          # blocking the job that long for a non-critical step isn't
+          # worth it. Users on stale cache will see the old UI for a
+          # few minutes; new visitors get the fresh version immediately.
