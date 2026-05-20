@@ -73,6 +73,26 @@ Critical pieces:
 - Numbered-list header cell D2 (merged D2:E3) is patched by `_spread_numbered_list_cell`. The template uses `vertical=distributed` to spread `.1 / .2 / .3 / .4 / .5` evenly across the cell — Excel honors that, LibreOffice doesn't (lines cluster). The fix encodes the spacing in the text itself (blank line between each number), switches the cell to `vertical=top`, and bumps R3 to 174pt so the now-9-line content fits. `HEADER_ROWS_HEIGHT_PT = 324.75` (R1=52.5 + R2=42 + R3=174 + R4=56.25) matches the actual template heights — the page-break walker uses this as the page-1 starting offset. Drift symptom if this undercounts: orphan-last-row on a near-empty page.
 - **Breathing blanks** (`_add_breathing_blanks` in filler.py, called at the very start of `fill_template`): inserts a `{"type": "blank"}` row at the top of every output (so content doesn't butt against the header), and one between the opening stage_direction block and the first character name when the scene opens on stage_directions. Blanks render as empty template-styled cells at `_MIN_ROW_HEIGHT_PT`. They count toward the page-break walker's row budget like any other row.
 
+## Deployment
+
+Live URL: https://d3jh9ygx0amvge.cloudfront.net/. Source of truth: `github.com/grassmeight/chubbuck`, branch `main`.
+
+The CloudFront distribution (`ENJIWKRFZYLJD`) has **two origins**:
+- Default behavior (`/`, `/index.html`, assets) → S3 bucket `chubbuck-static-344550433882`.
+- Ordered behavior (`/api/*`, `/health`) → Lambda Function URL.
+
+A push to `main` triggers `.github/workflows/deploy.yml`, which runs all four steps:
+1. Build the Docker image (`Dockerfile.lambda`), push to ECR.
+2. `aws lambda update-function-code` + wait for `Successful`.
+3. `aws s3 sync app/static/` to the static bucket — `*.html` gets `Cache-Control: no-cache`, everything else gets `max-age=86400`. `--delete` cleans up renamed/removed assets.
+4. `aws cloudfront create-invalidation --paths /*` (fire-and-forget; propagation 1–5 min).
+
+Steps 3 and 4 were added 2026-05-19 (commit `c1e1d13`). Before that the workflow only updated Lambda, which meant any change under `app/static/` (or `index.html`) would deploy a fresh Lambda image but leave CloudFront serving the previous static origin — symptom: UI doesn't match what's in the repo even though the Actions run is green. **If you see this, the first place to look is the "Sync static assets to S3" / "Invalidate CloudFront cache" steps in the latest run** — Lambda update success ≠ user-visible UI update.
+
+Auth is via OIDC: the IAM role `chubbuck-github-actions` (ARN in repo variable `AWS_ROLE_ARN`) trusts only `repo:grassmeight/chubbuck:ref:refs/heads/main`. The role has scoped permissions for ECR push, Lambda update on `chubbuck`, S3 PutObject/DeleteObject/ListBucket on the static bucket, and `cloudfront:CreateInvalidation` on this specific distribution — nothing else. Defined in `infra/github_oidc.tf`; trust target is set via `github_repo` in `infra/terraform.tfvars` (gitignored).
+
+The S3 `uploads` bucket (`chubbuck-uploads-344550433882`) is separate and only reachable via the presigned-PUT flow in `app/main.py` (`/api/upload-url` + `/api/convert-s3`); the GitHub Actions role has **no** access to it.
+
 ## Conventions & Gotchas
 
 - Development environment: Windows 11, PowerShell. Use PowerShell syntax in shell commands (`$env:VAR`, `;` for sequencing — `&&` is not available in Windows PowerShell 5.1).
