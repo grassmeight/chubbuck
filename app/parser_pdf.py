@@ -18,7 +18,7 @@ from pathlib import Path
 import pdfplumber
 from bidi.algorithm import get_display
 
-from app.parser_common import LogicalLine, clean, lines_to_items
+from app.parser_common import LogicalLine, _is_watermark, clean, lines_to_items
 
 # An underline rect must be thin and at most this many points tall.
 UNDERLINE_MAX_HEIGHT = 2.0
@@ -33,6 +33,22 @@ BOLD_FRACTION_THRESHOLD = 0.6
 # margins (not just a full-width line that happens to be centered).
 _CENTER_MIDPOINT_TOLERANCE_RATIO = 0.05
 _CENTER_MIN_MARGIN_RATIO = 0.10
+# A line is "right-edge aligned" if its x1 is within this many points of the
+# document's right text margin (computed per-doc). 20pt is generous enough
+# to absorb pdfplumber bbox jitter (one Rain Man stage direction landed at
+# x1=492.8 vs the 508.7 margin — 16pt short — while every dialogue line in
+# the same doc sits at x1=418, well outside the window). For the 4 canonical
+# reference files, no unbold uncentered line falls within this window, so
+# the rule is a no-op for the standard "stage notes are bolded" convention.
+_RIGHT_EDGE_TOLERANCE_PT = 20.0
+# Disable the right-aligned stage-direction promotion when more than this
+# fraction of unbold+uncentered lines reach the right margin. A justified
+# document (where dialogue lines stretch to fill the full text width when
+# wrapped) puts dialogue at the right margin too, so the geometric rule
+# can no longer distinguish stage notes from dialogue. Threshold sits well
+# above the observed 6–18% in screenplays with narrow-column dialogue and
+# well below the ~38% measured in a justified doc.
+_JUSTIFIED_DOC_RATIO_THRESHOLD = 0.25
 # Minimum x-gap (in points) between adjacent characters that indicates a word
 # boundary. Some PDFs encode actual space characters between words; others
 # position each word by coordinates and rely on the gap alone.
@@ -100,6 +116,45 @@ def _reconstruct_line_text(chars: list[dict]) -> str:
     return "".join(parts)
 
 
+def _annotate_right_aligned_lines(lines: list[LogicalLine]) -> None:
+    """Flag unbolded lines whose right edge meets the document's right margin.
+
+    In Hebrew screenplays that don't bold stage notes, the stage notes are
+    right-aligned to the page text margin while dialogue sits in a narrow
+    centered column whose right edge is well inside the page. The rule:
+    bold and centered lines are skipped (they have their own classifications);
+    a remaining line whose x1 lands within `_RIGHT_EDGE_TOLERANCE_PT` of the
+    document's max x1 gets promoted to stage_direction.
+
+    Watermark lines are excluded from the margin computation so a stray
+    watermark in the page corner can't shift the apparent right edge.
+
+    Width is intentionally NOT required: short single-line stage directions
+    ("ריימונד לא זז", "ריימונד מתבלבל") sit at the right margin too, and a
+    width minimum would lose them.
+
+    Justified-document guard: if a large fraction of unbolded uncentered
+    lines reach the right margin, the dialogue itself is right-aligned
+    (e.g. literary-script formatting that justifies long paragraphs) and
+    the rule cannot distinguish stage notes from dialogue. Skip annotation
+    so dialogue isn't misclassified — better to lose the rare opening
+    stage note than to scatter half the dialogue into stage_direction.
+    """
+    body = [ln for ln in lines if ln.text and not _is_watermark(ln.text)]
+    if not body:
+        return
+    right_margin = max(ln.x1 for ln in body)
+    candidates = [ln for ln in body if not ln.bold and not ln.centered]
+    if not candidates:
+        return
+    near_edge = [ln for ln in candidates
+                 if (right_margin - ln.x1) <= _RIGHT_EDGE_TOLERANCE_PT]
+    if len(near_edge) / len(candidates) > _JUSTIFIED_DOC_RATIO_THRESHOLD:
+        return
+    for ln in near_edge:
+        ln.right_aligned = True
+
+
 def _is_centered(x0: float, x1: float, page_width: float) -> bool:
     if page_width <= 0:
         return False
@@ -147,6 +202,7 @@ def _extract_logical_lines(pdf_path: Path) -> list[LogicalLine]:
                     centered=centered,
                     top=top, bottom=bottom, x0=x0, x1=x1, page=page_num,
                 ))
+    _annotate_right_aligned_lines(out)
     return out
 
 

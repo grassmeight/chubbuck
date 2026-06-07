@@ -66,6 +66,13 @@ class LogicalLine:
     bold: bool
     underlined: bool
     centered: bool = False
+    # Set by parser_pdf when the line reaches the document's right text
+    # margin AND is significantly wider than the typical dialogue column.
+    # In Hebrew screenplays that don't bold stage notes, stage notes appear
+    # as full-width right-aligned paragraphs while dialogue sits in a
+    # narrow centered column — this captures that geometric signal so the
+    # classifier can promote those lines to stage_direction.
+    right_aligned: bool = False
     # Geometry fields are PDF-only; DOCX leaves them at zero.
     top: float = 0.0
     bottom: float = 0.0
@@ -87,7 +94,22 @@ def _classify(line: LogicalLine) -> ItemType:
         return "name"
     if line.bold:
         return "stage_direction"
+    # Unbolded full-width right-aligned paragraphs: stage notes in scripts
+    # that don't bold them (see right_aligned on LogicalLine).
+    if line.right_aligned:
+        return "stage_direction"
     return "dialogue"
+
+
+# Hebrew screenplay scene-location headers, e.g. "פנים. יום. סלון ביתו".
+# The two prefix words are "פנים" (interior) and "חוץ" (exterior) followed by
+# a period and a space — the standard slugline shape. Specific enough that
+# legitimate dialogue won't match.
+_SCENE_HEADING_RE = re.compile(r'^(פנים|חוץ)\.\s')
+
+
+def _is_scene_heading(text: str) -> bool:
+    return bool(_SCENE_HEADING_RE.match(text.strip()))
 
 
 # Watermark/footer the source documents carry (author contact line). Filter
@@ -210,7 +232,8 @@ def fix_reversed_brackets(items: list[dict]) -> list[dict]:
 
 def lines_to_items(lines: list[LogicalLine]) -> list[dict]:
     """Run the shared post-extraction pipeline."""
-    lines = [ln for ln in lines if not _is_watermark(ln.text)]
+    lines = [ln for ln in lines
+             if not _is_watermark(ln.text) and not _is_scene_heading(ln.text)]
     items = group_into_items(lines)
     items = trim_preamble(items)
     return fix_reversed_brackets(items)
