@@ -142,17 +142,36 @@ def _run_underlined(run, paragraph) -> bool:
     return bool(val)
 
 
-def _paragraph_centered(paragraph) -> bool:
-    """True if the paragraph's effective alignment is center. Walks the
-    paragraph style chain since Word often sets alignment on a 'Character'
-    or screenplay style rather than the paragraph itself."""
+def _effective_alignment(paragraph):
+    """Effective paragraph alignment (WD_ALIGN_PARAGRAPH.* or None). Walks the
+    paragraph style chain since Word often sets alignment on a 'Character' or
+    screenplay style rather than the paragraph itself. None means no alignment
+    is set anywhere — which for an RTL Hebrew paragraph renders right-aligned."""
     align = paragraph.alignment
     if align is not None:
-        return align == WD_ALIGN_PARAGRAPH.CENTER
-    val = _style_property(
+        return align
+    return _style_property(
         paragraph.style,
         lambda s: getattr(getattr(s, "paragraph_format", None), "alignment", None))
-    return val == WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _paragraph_centered(paragraph) -> bool:
+    """True if the paragraph's effective alignment is center."""
+    return _effective_alignment(paragraph) == WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _paragraph_right_default(paragraph) -> bool:
+    """True if the paragraph sits at the right text margin: alignment is
+    explicitly RIGHT or is unset (None) — an unset RTL Hebrew paragraph
+    renders right-aligned by default. LEFT/JUSTIFY are excluded; those aren't
+    the right-margin signal we use to spot unbolded stage notes.
+
+    In Hebrew screenplays that don't bold their stage notes, dialogue and
+    character names are explicitly centered while stage directions carry no
+    alignment (so they fall to the RTL default, the right margin). This is the
+    DOCX analog of the PDF parser's right-edge geometry (see `right_aligned`
+    on LogicalLine)."""
+    return _effective_alignment(paragraph) in (None, WD_ALIGN_PARAGRAPH.RIGHT)
 
 
 def _split_paragraph_into_segments(para):
@@ -193,12 +212,40 @@ def _split_paragraph_into_segments(para):
     return segments
 
 
+# If more than this fraction of non-bold lines sit at the right margin, the
+# document right-aligns its dialogue too (so right-alignment can no longer tell
+# stage notes from dialogue) and geometric promotion is skipped entirely. Same
+# threshold and rationale as parser_pdf's justified-doc guard.
+_JUSTIFIED_DOC_RATIO_THRESHOLD = 0.25
+
+
+def _annotate_right_aligned_lines(lines: list[LogicalLine]) -> None:
+    """Promote unbolded right-margin lines to stage_direction candidates.
+
+    A line was provisionally flagged `right_aligned` during extraction when it
+    was not bold, not centered, and its paragraph sat at the right margin (see
+    `_paragraph_right_default`). Here we apply the justified-document guard: if
+    those flagged lines are more than `_JUSTIFIED_DOC_RATIO_THRESHOLD` of the
+    non-bold body, the document right-aligns dialogue too and the signal is
+    worthless — clear every flag so dialogue isn't scattered into stage notes.
+    Otherwise the flags stand and `_classify` treats them as stage_direction."""
+    candidates = [ln for ln in lines if ln.text and not ln.bold]
+    if not candidates:
+        return
+    flagged = [ln for ln in candidates if ln.right_aligned]
+    if len(flagged) / len(candidates) > _JUSTIFIED_DOC_RATIO_THRESHOLD:
+        for ln in flagged:
+            ln.right_aligned = False
+
+
 def _extract_logical_lines(docx_path: Path) -> list[LogicalLine]:
     doc = Document(str(docx_path))
     out: list[LogicalLine] = []
     for para in doc.paragraphs:
         if not para.text.strip():
             continue
+        centered = _paragraph_centered(para)
+        right_default = not centered and _paragraph_right_default(para)
         for segment in _split_paragraph_into_segments(para):
             text = "".join(c for c, _, _ in segment).strip()
             if not text:
@@ -212,8 +259,12 @@ def _extract_logical_lines(docx_path: Path) -> list[LogicalLine]:
                 text=clean(text),
                 bold=bold,
                 underlined=underlined,
-                centered=_paragraph_centered(para),
+                centered=centered,
+                # Only unbolded right-margin lines are stage-note candidates;
+                # bold lines already have their own (name/stage) classification.
+                right_aligned=right_default and not bold,
             ))
+    _annotate_right_aligned_lines(out)
     return out
 
 
