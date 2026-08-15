@@ -122,9 +122,25 @@ def _is_watermark(text: str) -> bool:
     return _WATERMARK_TOKEN in text.lower()
 
 
+_BRACKET_CHARS = "()[]{}"
+
+
+def _has_open_cue(text: str) -> bool:
+    """True when a name's parenthetical cue is left hanging open.
+
+    A character cue whose parenthetical is too long for one line wraps, and
+    the extractor hands us two separate name lines ('קב"שית (בחוסר' then
+    'אמון)') that would otherwise become two name items — the second one
+    junk. An odd bracket count marks the first half. Orientation-agnostic:
+    `fix_reversed_brackets` runs later, so at this point the pair may still
+    read ')...(' and we can only count characters, not nesting.
+    """
+    return sum(text.count(c) for c in _BRACKET_CHARS) % 2 == 1
+
+
 def group_into_items(lines: list[LogicalLine]) -> list[dict]:
     """Apply the chunking rule:
-       - Each name -> own item
+       - Each name -> own item, except a wrapped cue continuing the previous
        - Consecutive dialogue lines -> merged item
        - Consecutive stage_direction lines -> merged item
     """
@@ -146,7 +162,13 @@ def group_into_items(lines: list[LogicalLine]) -> list[dict]:
         if kind == "name":
             flush(dialogue_buffer, "dialogue")
             flush(stage_buffer, "stage_direction")
-            items.append({"type": "name", "text": line.text})
+            # After the flushes, a trailing name item can only mean the
+            # previous line was also a name with nothing in between — so an
+            # unbalanced cue there is one this line continues.
+            if items and items[-1]["type"] == "name" and _has_open_cue(items[-1]["text"]):
+                items[-1]["text"] = f'{items[-1]["text"]} {line.text}'
+            else:
+                items.append({"type": "name", "text": line.text})
         elif kind == "stage_direction":
             flush(dialogue_buffer, "dialogue")
             stage_buffer.append(line.text)
@@ -158,13 +180,36 @@ def group_into_items(lines: list[LogicalLine]) -> list[dict]:
     return items
 
 
+# Everything from the first bracket character onward — a character cue's
+# parenthetical stage note ("דפי (נאנחת)", "קב\"שית (לזוהר)"). Same as
+# _has_open_cue, the pair may still be reversed at this point, so both
+# orientations have to count as an opener.
+_NAME_CUE_RE = re.compile(rf"[{re.escape(_BRACKET_CHARS)}].*$", re.S)
+
+
+def _name_identity(text: str) -> str:
+    """The character part of a name item, stripped of its parenthetical cue.
+
+    Scripts give the same character a different cue on nearly every turn
+    ('קב"שית', 'קב"שית (לדפי)', 'קב"שית (בחוסר אמון)'), so the raw text is
+    useless for deciding whether a name recurs. Fall back to the full text
+    when a name is nothing but a cue, so two such names don't both collapse
+    to the empty string and look like a repeat of each other.
+    """
+    return _NAME_CUE_RE.sub("", text).strip() or text.strip()
+
+
 def trim_preamble(items: list[dict]) -> list[dict]:
     """Drop preamble items: scene titles, "by:" lines, cast descriptions, etc.
 
     Anchor on the *first character name that repeats* — real characters speak
     multiple times in a scene, scene titles appear exactly once. Walk every
-    name and pick the first one whose text appears again as a name elsewhere
-    in the document.
+    name and pick the first one whose identity (`_name_identity`: the name
+    without its parenthetical cue) appears again as a name elsewhere in the
+    document. Comparing raw text instead loses every script that varies the
+    cue per turn — each turn reads as a distinct one-off name, the anchor
+    slides to whichever character happens to be cued bare twice, and the
+    opening exchanges get trimmed away as preamble.
 
     Why this rule: the obvious "first name followed by dialogue" heuristic
     fails on a common shape — title (name) → credits (dialogue) → opening
@@ -180,12 +225,12 @@ def trim_preamble(items: list[dict]) -> list[dict]:
     name_indices: list[int] = [i for i, it in enumerate(items) if it["type"] == "name"]
     name_counts: dict[str, int] = {}
     for i in name_indices:
-        text = items[i]["text"].strip()
-        name_counts[text] = name_counts.get(text, 0) + 1
+        identity = _name_identity(items[i]["text"])
+        name_counts[identity] = name_counts.get(identity, 0) + 1
 
     first_real_name: int | None = None
     for i in name_indices:
-        if name_counts.get(items[i]["text"].strip(), 0) >= 2:
+        if name_counts.get(_name_identity(items[i]["text"]), 0) >= 2:
             first_real_name = i
             break
 
