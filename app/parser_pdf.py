@@ -49,6 +49,12 @@ _RIGHT_EDGE_TOLERANCE_PT = 20.0
 # above the observed 6–18% in screenplays with narrow-column dialogue and
 # well below the ~38% measured in a justified doc.
 _JUSTIFIED_DOC_RATIO_THRESHOLD = 0.25
+# Disable the promotion when at least this share of the near-right-margin
+# lines are also horizontally centered — the mark of a center-justified
+# script whose long dialogue lines reach the margin, rather than a
+# right-aligned stage note. Observed shares: 0% (Rain Man), 29% (Raging
+# Bull), 100% (Gilmore Girls); 75% sits well clear of both sides.
+_CENTERED_BLOCK_RATIO_THRESHOLD = 0.75
 # Minimum x-gap (in points) between adjacent characters that indicates a word
 # boundary. Some PDFs encode actual space characters between words; others
 # position each word by coordinates and rely on the gap alone.
@@ -133,23 +139,48 @@ def _annotate_right_aligned_lines(lines: list[LogicalLine]) -> None:
     ("ריימונד לא זז", "ריימונד מתבלבל") sit at the right margin too, and a
     width minimum would lose them.
 
-    Justified-document guard: if a large fraction of unbolded uncentered
-    lines reach the right margin, the dialogue itself is right-aligned
-    (e.g. literary-script formatting that justifies long paragraphs) and
-    the rule cannot distinguish stage notes from dialogue. Skip annotation
-    so dialogue isn't misclassified — better to lose the rare opening
-    stage note than to scatter half the dialogue into stage_direction.
+    Justified-document guard: if a large fraction of unbolded lines reach
+    the right margin, the dialogue itself is right-aligned (e.g. literary-
+    script formatting that justifies long paragraphs) and the rule cannot
+    distinguish stage notes from dialogue. Skip annotation so dialogue isn't
+    misclassified — better to lose the rare opening stage note than to
+    scatter half the dialogue into stage_direction.
+
+    Centered-block guard: a *center-justified* script sets its dialogue with
+    equal left and right margins, so the long lines of a speech reach the
+    right margin too and the ratio guard alone doesn't catch them (observed
+    22% in בנות גילמור — under the 25% threshold because the many short
+    single-line replies dilute it). Centering separates the two cases
+    cleanly, but only per-document: a genuinely right-aligned line has its
+    right edge pinned to the margin and a ragged left edge (Rain Man: right
+    gap 86.6-86.8pt across nine notes, left gap 235-453), while a centered
+    line's edges move together (Gilmore: right gap 92-108). A single
+    full-width line is inherently ambiguous — it looks centered *and*
+    right-aligned — so we judge the block, not the line: when nearly every
+    near-edge line is centered, the "right margin" we found is really the
+    page's center-justified text block. Observed centered shares: 0% (Rain
+    Man), 29% (Raging Bull — two full-width notes in a genuinely
+    right-aligned block), 100% (Gilmore).
     """
     body = [ln for ln in lines if ln.text and not _is_watermark(ln.text)]
     if not body:
         return
     right_margin = max(ln.x1 for ln in body)
-    candidates = [ln for ln in body if not ln.bold and not ln.centered]
+    # Centered lines are NOT excluded here: a full-width right-aligned stage
+    # note reads as centered (equal margins by coincidence of spanning the
+    # text width), and dropping those loses two real notes in Raging Bull.
+    # The centered-block guard below handles them at document level instead.
+    candidates = [ln for ln in body if not ln.bold]
     if not candidates:
         return
     near_edge = [ln for ln in candidates
                  if (right_margin - ln.x1) <= _RIGHT_EDGE_TOLERANCE_PT]
+    if not near_edge:
+        return
     if len(near_edge) / len(candidates) > _JUSTIFIED_DOC_RATIO_THRESHOLD:
+        return
+    centered_share = sum(1 for ln in near_edge if ln.centered) / len(near_edge)
+    if centered_share >= _CENTERED_BLOCK_RATIO_THRESHOLD:
         return
     for ln in near_edge:
         ln.right_aligned = True
@@ -192,7 +223,12 @@ def _extract_logical_lines(pdf_path: Path) -> list[LogicalLine]:
                 x0 = tl["x0"]
                 x1 = tl["x1"]
                 underlined = _line_underlined(top, bottom, x0, x1, underlines) if bold else False
-                centered = _is_centered(x0, x1, page_width) if bold else False
+                # Computed for every line, not just bold ones: `_classify`
+                # only consults it under `bold` (bold+centered = name), but
+                # `_annotate_right_aligned_lines` needs it for unbold lines
+                # to tell a center-justified paragraph from a right-aligned
+                # one.
+                centered = _is_centered(x0, x1, page_width)
                 logical_text = clean(get_display(raw_text, base_dir='R'),
                                      fix_pdf_split_hebrew=True)
                 out.append(LogicalLine(
