@@ -160,18 +160,63 @@ def _paragraph_centered(paragraph) -> bool:
     return _effective_alignment(paragraph) == WD_ALIGN_PARAGRAPH.CENTER
 
 
+def _ppr_bidi(ppr) -> bool | None:
+    """Read <w:bidi> from a paragraph-properties element. None = not set here."""
+    if ppr is None:
+        return None
+    return _toggle(ppr.find(qn("w:bidi")))
+
+
+def _paragraph_is_rtl(paragraph) -> bool:
+    """True if the paragraph's base direction is right-to-left (<w:bidi>),
+    checked on the paragraph, then up the style chain, then the document
+    defaults (w:docDefaults/w:pPrDefault)."""
+    direct = _ppr_bidi(paragraph._p.find(qn("w:pPr")))
+    if direct is not None:
+        return direct
+    val = _style_property(paragraph.style,
+                          lambda s: _ppr_bidi(s.element.find(qn("w:pPr"))))
+    if val is not None:
+        return val
+    try:
+        defaults = paragraph.part.styles.element.find(qn("w:docDefaults"))
+        ppr_default = defaults.find(qn("w:pPrDefault")) if defaults is not None else None
+        return bool(_ppr_bidi(ppr_default.find(qn("w:pPr")) if ppr_default is not None else None))
+    except AttributeError:
+        return False
+
+
 def _paragraph_right_default(paragraph) -> bool:
-    """True if the paragraph sits at the right text margin: alignment is
-    explicitly RIGHT or is unset (None) — an unset RTL Hebrew paragraph
-    renders right-aligned by default. LEFT/JUSTIFY are excluded; those aren't
-    the right-margin signal we use to spot unbolded stage notes.
+    """True if the paragraph sits at the right text margin.
 
     In Hebrew screenplays that don't bold their stage notes, dialogue and
-    character names are explicitly centered while stage directions carry no
-    alignment (so they fall to the RTL default, the right margin). This is the
-    DOCX analog of the PDF parser's right-edge geometry (see `right_aligned`
-    on LogicalLine)."""
-    return _effective_alignment(paragraph) in (None, WD_ALIGN_PARAGRAPH.RIGHT)
+    character names are explicitly centered while stage directions are left
+    at the paragraph default or aligned to the start edge — the right margin
+    for RTL text. This is the DOCX analog of the PDF parser's right-edge
+    geometry (see `right_aligned` on LogicalLine).
+
+    Which `w:jc` values mean "right margin" depends on the paragraph
+    direction, because Transitional OOXML keeps the legacy `left`/`right`
+    values with *logical* meaning: `left` is the start edge and `right` the
+    end edge (ISO/IEC 29500-4, ST_Jc). So on an RTL paragraph Word stores a
+    visually right-aligned stage note as `w:jc="left"` — 55 such lines across
+    the review corpus, every one on a `<w:bidi>` paragraph, and not a single
+    `right`+bidi line. We therefore accept:
+      - unset (None): the RTL default, right margin (also when bidi lives in
+        the document defaults rather than on the paragraph, as in מרד הנעורים)
+      - RIGHT on a non-RTL paragraph: physically right
+      - LEFT or RIGHT on an RTL paragraph: `left` is the start edge; `right`
+        is accepted too so a producer using physical semantics isn't lost —
+        a Hebrew line pinned to the *left* margin isn't a plausible layout
+        for either dialogue or a stage note.
+    JUSTIFY/CENTER/DISTRIBUTE and LEFT-on-LTR are never the right-margin
+    signal."""
+    align = _effective_alignment(paragraph)
+    if align is None or align == WD_ALIGN_PARAGRAPH.RIGHT:
+        return True
+    if align == WD_ALIGN_PARAGRAPH.LEFT:
+        return _paragraph_is_rtl(paragraph)
+    return False
 
 
 def _split_paragraph_into_segments(para):
@@ -215,8 +260,15 @@ def _split_paragraph_into_segments(para):
 # If more than this fraction of non-bold lines sit at the right margin, the
 # document right-aligns its dialogue too (so right-alignment can no longer tell
 # stage notes from dialogue) and geometric promotion is skipped entirely. Same
-# threshold and rationale as parser_pdf's justified-doc guard.
-_JUSTIFIED_DOC_RATIO_THRESHOLD = 0.25
+# rationale as parser_pdf's justified-doc guard, but the DOCX signal is an
+# explicit alignment property rather than x-geometry, so the two populations
+# are far apart: across the 61-file review corpus the highest legitimate
+# share is 0.27 (אהבה נושכת, נאמנות גבוהה — scripts dense with one-line stage
+# notes), while a document whose *dialogue* is default-aligned would score
+# close to 1.0 since nearly every unbold line is flagged. The PDF value of
+# 0.25 fired on האחים סיסטרז at 0.26 and cleared all 13 real notes; 0.5 sits
+# midway between the two populations.
+_JUSTIFIED_DOC_RATIO_THRESHOLD = 0.5
 
 
 def _annotate_right_aligned_lines(lines: list[LogicalLine]) -> None:

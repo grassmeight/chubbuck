@@ -8,14 +8,16 @@ Item type -> formatting:
 All cells get explicit RTL reading order so mixed Hebrew/English stays
 right-to-left regardless of Unicode bidi context.
 
-Row height is computed from text length (approximate wrap calculation) plus
-a 10pt padding so the cell never crops.
+Row height comes from a word-wrap simulation with the real Noto Sans Hebrew
+glyph widths (see _wrapped_line_count) times a per-line height, plus a small
+per-kind padding, so the cell never crops.
 """
 from __future__ import annotations
 
 import math
 import os
 from copy import copy
+from functools import lru_cache
 from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
@@ -53,71 +55,164 @@ _PRINT_SCALE_PCT = 55
 # uses the full 798pt, Noto uses ~5% less to absorb metric drift that was
 # clipping multi-line stage_directions at the bottom of pages.
 
-# Empirical layout numbers tuned to the template (Calibri 16, column B width
-# 52.71). Hebrew text at this column width and font size wraps at roughly this
-# many characters per visual line.
+# Layout numbers tuned to the template (Calibri 16, column B width 61).
 #
-# Two-profile setup, gated on CELL_FONT_OVERRIDE:
-#   - OFF (local dev, Carlito): the original tuning that produced the
-#     reference output. _LINE_HEIGHT_PT=24, paddings small.
-#   - ON  (Lambda, Noto Sans Hebrew): Noto renders noticeably taller AND
-#     wider than Carlito at the same point size. The OFF tuning undercounts
-#     both visual line height and per-line character capacity, which packed
-#     rows tight and let long dialogue cells overflow off the bottom of the
-#     page (text cut mid-sentence). The ON tuning bumps both line height
-#     and per-tier padding, and lowers _CHARS_PER_LINE so wrap estimates
-#     run conservative.
+# Hebrew glyphs render in Noto Sans Hebrew everywhere: LibreOffice picks it
+# as the Hebrew fallback for Calibri locally, and the Lambda deploy sets it
+# explicitly via CELL_FONT_OVERRIDE. So one set of per-line numbers serves
+# both environments. Measured from the rendered PDFs (75 review outputs):
+# when a cell is too short LibreOffice packs its lines at their natural
+# pitch, 10.0pt at the 55 percent print scale = 18.2pt logical; the 24pt per
+# line below leaves about 30 percent headroom, which the cell's 'distributed'
+# vertical alignment spreads between the lines. The clipping found in the
+# review ("טקסט חתוך") was never the per-line height, it was the *line
+# count*: 50 characters per line was assumed, 40-44 (32-39 bold) actually
+# fit, so any cell on the boundary rendered one more line than its row had
+# room for and the extra line was squeezed under the previous one, overlapped
+# by the next row. Raising the per-line height instead (27.3 was tried) costs
+# 19 percent more pages for no gain.
+#
+# Row *width* is therefore no longer estimated from a character count; see
+# _wrapped_line_count. The character counts below are only the fallback for
+# when the font file can't be found.
 _MIN_ROW_HEIGHT_PT = 24.0
 _LONG_LINE_THRESHOLD = 4  # >=4 wrapped lines -> "long" padding tier
 
+# Column B inner width in logical points: the cell borders sit at x=580.0
+# and x=766.2 in the rendered PDF (186.2pt at the 55% scale -> 338.5pt).
+# The wrap simulation compares Pillow advance widths at the cell font size
+# against this, so it tracks the template rather than a character count.
+_COLUMN_B_INNER_WIDTH_PT = 338.5
+# LibreOffice lays Noto Sans Hebrew out a little narrower than Pillow's
+# advance widths say. Measured (rendered width / Pillow width at 16pt, over
+# Hebrew-only lines): regular 0.506-0.549 (p5-p95, n=2089), bold 0.483-0.516
+# (n=228), against the nominal 0.55 print scale. Dividing the column width
+# by the p95 ratio gives the *smallest* width LO will certainly fit on one
+# line, so the estimate errs toward one more line rather than one fewer.
+_LO_WIDTH_RATIO = {"regular": 0.549 / 0.55, "bold": 0.5156 / 0.55}
+# Character-count fallback when no font file is available. Conservative:
+# measured capacity is 40-44 regular / 32-39 bold characters per line.
+_FALLBACK_CHARS_PER_LINE = {"regular": 40, "bold": 33}
+_WRAP_FONT_FILES = {"regular": "NotoSansHebrew-Regular.ttf",
+                    "bold": "NotoSansHebrew-Bold.ttf"}
+
+# A final page carrying less than this share of the page budget reads as
+# broken output -- one stranded line under an otherwise empty grid (observed
+# in השור הזועם: page 6 filled 878 of 886pt, so the closing 28pt stage
+# direction spilled onto a page of its own at 0.16% ink). The page *count*
+# can't be improved -- greedy packing is optimal for a fixed row order, since
+# holding an item back can never let more fit later -- so the remedy is to
+# pull units back from the penultimate page until the last one is decently
+# filled. Only the last two pages are touched, and never at the cost of an
+# extra page.
+_MIN_LAST_PAGE_FILL_RATIO = 0.25
+
 
 def _layout_profile() -> dict:
-    """Return font-dependent layout constants. Read at call time so changes
-    to CELL_FONT_OVERRIDE between requests are picked up without reload.
+    """Return layout constants. Read at call time so changes to
+    CELL_FONT_OVERRIDE between requests are picked up without reload.
+
+    Line height and padding are the same in both environments (same glyphs,
+    see the header comment; the padding tiers are the ones that produced the
+    reviewer-approved density). Only the per-page budget still differs: Lambda
+    keeps the ~5% buffer below the theoretical 886pt (487pt physical / 0.55)
+    that was added when multi-line cells clipped at the page bottom. With the
+    row heights now measured rather than guessed that buffer is probably
+    unnecessary, but it is harmless and hasn't been re-verified on Lambda.
     """
-    if os.environ.get("CELL_FONT_OVERRIDE"):
-        return {
-            "chars_per_line": 46,
-            "line_height_pt": 27.0,
-            "name_pad": 6.0,
-            "dialogue_short_pad": 6.0,
-            "dialogue_long_pad": 14.0,
-            "stage_short_pad": 6.0,
-            "stage_long_pad": 10.0,
-            # Noto undercounts real render height; multi-line stage_directions
-            # at the bottom of a page were getting clipped mid-character.
-            # ~5% buffer below the theoretical 886pt budget (at 55% scale)
-            # eliminates the overflow without losing meaningful rows.
-            "page_content_height_pt": 842.0,
-        }
+    budget = 842.0 if os.environ.get("CELL_FONT_OVERRIDE") else 886.0
     return {
-        "chars_per_line": 50,
         "line_height_pt": 24.0,
         "name_pad": 4.0,
         "dialogue_short_pad": 4.0,
         "dialogue_long_pad": 10.0,
         "stage_short_pad": 4.0,
         "stage_long_pad": 6.0,
-        # 487pt physical usable / 0.55 scale ≈ 886pt logical per page.
-        "page_content_height_pt": 886.0,
+        "page_content_height_pt": budget,
     }
 
 
-def _estimate_row_height(text: str, kind: str) -> float:
-    """Estimate the visual row height in points, given the wrapped text.
+def _font_search_dirs() -> list[Path]:
+    dirs = [Path(os.environ["WINDIR"]) / "Fonts"] if os.environ.get("WINDIR") else []
+    dirs += [Path("/usr/share/fonts/truetype/noto"), Path("/usr/share/fonts"),
+             Path("/usr/local/share/fonts"), Path.home() / ".fonts"]
+    return dirs
 
-    Counts explicit newlines plus an approximate wrap based on character
-    count. Profile-aware: padding tiers and line height come from
-    _layout_profile() so Lambda (Noto) gets looser values than local
-    (Carlito).
+
+@lru_cache(maxsize=None)
+def _wrap_font(weight: str, size: int):
+    """Pillow font for width measurement, or None if Pillow or the Noto Sans
+    Hebrew file isn't available (then the character-count fallback is used).
+    Debian's fonts-noto-core (installed in Dockerfile.lambda) puts the file
+    under /usr/share/fonts/truetype/noto; Windows ships it in C:/Windows/Fonts.
+    """
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    name = _WRAP_FONT_FILES[weight]
+    for d in _font_search_dirs():
+        direct = d / name
+        if direct.is_file():
+            return ImageFont.truetype(str(direct), size)
+        if d.is_dir():
+            hit = next(d.rglob(name), None)
+            if hit is not None:
+                return ImageFont.truetype(str(hit), size)
+    return None
+
+
+def _wrapped_line_count(para: str, weight: str, font_size: float) -> int:
+    """How many visual lines one paragraph takes in column B.
+
+    Greedy word wrap, the way LibreOffice breaks a cell: words are measured
+    with the real font and packed while they fit; a word wider than the
+    column is broken mid-word and takes ceil(width / column) lines. The
+    column capacity is in points and fixed by the template; Pillow widths
+    are in points at the cell font size, so a bigger font simply fits fewer
+    words.
+    """
+    font = _wrap_font(weight, int(round(font_size)))
+    if font is None:
+        return max(1, math.ceil(len(para) / _FALLBACK_CHARS_PER_LINE[weight]))
+    capacity = _COLUMN_B_INNER_WIDTH_PT / _LO_WIDTH_RATIO[weight]
+    words = para.split()
+    if not words:
+        return 1
+    space = font.getlength(" ")
+    lines, used = 1, 0.0
+    for word in words:
+        width = font.getlength(word)
+        if width > capacity:
+            # Doesn't fit on any line: LO moves it to a fresh line (unless
+            # the current one is empty) and breaks it as often as needed.
+            if used > 0:
+                lines += 1
+            lines += math.ceil(width / capacity) - 1
+            used = width % capacity
+        elif used == 0:
+            used = width
+        elif used + space + width <= capacity:
+            used += space + width
+        else:
+            lines += 1
+            used = width
+    return lines
+
+
+def _estimate_row_height(text: str, kind: str, font_size: float = 16.0) -> float:
+    """Estimate the visual row height in points for the wrapped text.
+
+    Explicit newlines start new lines; each paragraph is word-wrapped with
+    real glyph widths (see _wrapped_line_count). Names and stage directions
+    are set in bold, which is wider. Padding tiers come from _layout_profile().
     """
     if not text:
         return _MIN_ROW_HEIGHT_PT
     p = _layout_profile()
-    paragraphs = text.split("\n")
-    total_lines = 0
-    for para in paragraphs:
-        total_lines += max(1, math.ceil(len(para) / p["chars_per_line"]))
+    weight = "bold" if kind in ("name", "stage_direction") else "regular"
+    total_lines = sum(_wrapped_line_count(para, weight, font_size)
+                      for para in text.split("\n"))
     is_long = total_lines >= _LONG_LINE_THRESHOLD
     if kind == "name":
         padding = p["name_pad"]
@@ -180,37 +275,66 @@ def _set_page_breaks_keeping_name_with_dialogue(ws, items: list[dict]) -> None:
     page budget is intentionally smaller than LibreOffice's real budget,
     LibreOffice won't insert any natural page breaks of its own — so the page
     break pattern is fully deterministic from this calculation.
+
+    Widow control: greedy packing minimises the page count (optimal for a
+    fixed row order — holding a unit back can never let more fit later), but
+    it says nothing about how the *last* page looks, and a document whose
+    tail overruns the final page by a few points ends up with one stranded
+    row on an otherwise blank page. When the last page falls below
+    `_MIN_LAST_PAGE_FILL_RATIO` of the budget, units are pulled back from the
+    penultimate page until it is decently filled. This only redistributes the
+    final two pages and can never add one.
     """
     page_budget = _layout_profile()["page_content_height_pt"]
-    breaks: list[int] = []  # row numbers AFTER which to break
-    current_y = HEADER_ROWS_HEIGHT_PT  # page 1 starts with the header
 
+    def row_height(row: int) -> float:
+        return ws.row_dimensions[row].height or _MIN_ROW_HEIGHT_PT
+
+    # Indivisible units: a name and the dialogue under it travel together.
+    units: list[tuple[int, int, float]] = []  # (first_row, n_rows, height)
     i = 0
     while i < len(items):
-        item = items[i]
         row = DATA_START_ROW + i
-        h = ws.row_dimensions[row].height or _MIN_ROW_HEIGHT_PT
-
-        # If this row is a name and the next is dialogue, plan them as a unit.
-        unit_h = h
-        unit_size = 1
-        if (item["type"] == "name"
+        height = row_height(row)
+        size = 1
+        if (items[i]["type"] == "name"
                 and i + 1 < len(items)
                 and items[i + 1]["type"] == "dialogue"):
-            next_row = row + 1
-            next_h = ws.row_dimensions[next_row].height or _MIN_ROW_HEIGHT_PT
-            unit_h = h + next_h
-            unit_size = 2
+            height += row_height(row + 1)
+            size = 2
+        units.append((row, size, height))
+        i += size
 
-        if current_y + unit_h > page_budget and current_y > HEADER_ROWS_HEIGHT_PT:
-            # Doesn't fit on this page -> break before this row.
-            breaks.append(row - 1)
-            current_y = unit_h
-        else:
-            current_y += unit_h
+    # Greedy pack. Page 1 opens below the header; later pages start empty.
+    # The "never break before the first unit on a page" test is `if page`,
+    # not a comparison against the header height — on page 2+ a tall opening
+    # unit can leave current_y below the header height, which used to
+    # suppress the next break and silently overflow the page.
+    pages: list[list[int]] = []
+    page: list[int] = []
+    used = HEADER_ROWS_HEIGHT_PT
+    for idx, (_, _, height) in enumerate(units):
+        if page and used + height > page_budget:
+            pages.append(page)
+            page, used = [], 0.0
+        page.append(idx)
+        used += height
+    if page:
+        pages.append(page)
 
-        i += unit_size
+    def page_height(indices: list[int]) -> float:
+        return sum(units[u][2] for u in indices)
 
+    if len(pages) >= 2:
+        last, prev = pages[-1], pages[-2]
+        min_fill = page_budget * _MIN_LAST_PAGE_FILL_RATIO
+        # Leave at least one unit on the penultimate page, and never push the
+        # last page past the budget (that would cost an extra page).
+        while (len(prev) > 1 and page_height(last) < min_fill
+               and page_height(last) + units[prev[-1]][2] <= page_budget):
+            last.insert(0, prev.pop())
+
+    breaks = [units[page[-1]][0] + units[page[-1]][1] - 1 for page in pages[:-1]]
     if breaks:
         ws.row_breaks.brk = [Break(id=b, man=True) for b in breaks]
 
@@ -389,7 +513,8 @@ def fill_template(items: list[dict], template_path: str | Path,
             color=base_font.color,
         )
         cell.alignment = _alignment_for(kind, base_align)
-        ws.row_dimensions[row].height = _estimate_row_height(item["text"], kind)
+        ws.row_dimensions[row].height = _estimate_row_height(
+            item["text"], kind, font_size=base_font.size or 16)
 
     _set_page_breaks_keeping_name_with_dialogue(ws, items)
 

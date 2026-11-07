@@ -106,10 +106,54 @@ def _classify(line: LogicalLine) -> ItemType:
 # a period and a space — the standard slugline shape. Specific enough that
 # legitimate dialogue won't match.
 _SCENE_HEADING_RE = re.compile(r'^(פנים|חוץ)\.\s')
+_SLUG_SEGMENT_BOUNDARY_RE = re.compile(r'\.\s+')
+# A slug is a run of short period-separated tokens: "פנים. לילה. הדירה של ג'רי".
+# Each token is at most this many words.
+_SLUG_SEGMENT_MAX_WORDS = 3
+# What remains after the slug tokens is kept as a stage direction only when
+# it is at least this long; shorter remainders are location fragments.
+_SLUG_ACTION_MIN_WORDS = 5
 
 
 def _is_scene_heading(text: str) -> bool:
     return bool(_SCENE_HEADING_RE.match(text.strip()))
+
+
+def _strip_scene_heading(text: str) -> str | None:
+    """Drop a slug line, or peel the slug off a slug+action line.
+
+    Returns the text to keep, or None to drop the line entirely. Lines that
+    don't start like a slug are returned unchanged.
+
+    Writers often fold the opening action into the slug line — bold, so it
+    classifies as a stage direction — and dropping the whole line loses the
+    scene's opening note: "פנים. פיליפ ואליזבת נמצאים בחדר הכביסות הצמוד
+    למוסך." (האמריקאים), "פנים. חדר מעונות. יום. לוגן יושב וקורא עיתון. רורי
+    … דופקת" (בנות גילמור). Five of the twelve slug-matching lines in the
+    review corpus are this shape (8–14 words); the seven true slugs are 3–6.
+
+    Word count alone can't separate them at six words ("פנים. יום. ביתה של
+    מאדאם טורבל." vs "פנים. בית. סנדרה וסמואל אוכלים במטבח."), so the rule
+    is structural: walk the period-separated segments from the start and
+    skip every one of at most `_SLUG_SEGMENT_MAX_WORDS` words — the slug
+    tokens (interior/exterior, time, short location). Keep what's left from
+    the first longer segment onward if it has at least
+    `_SLUG_ACTION_MIN_WORDS` words. A four-word location like "מחוץ למועדון
+    הסטנד אפ" still drops; so does the four-word action in אנטומיה של נפילה,
+    which is the price of not inventing a location-vs-action classifier.
+    """
+    t = text.strip()
+    if not _SCENE_HEADING_RE.match(t):
+        return text
+    pos = 0
+    for m in _SLUG_SEGMENT_BOUNDARY_RE.finditer(t):
+        if len(t[pos:m.start()].split()) > _SLUG_SEGMENT_MAX_WORDS:
+            break
+        pos = m.end()
+    remainder = t[pos:]
+    if len(remainder.split()) >= _SLUG_ACTION_MIN_WORDS:
+        return remainder
+    return None
 
 
 # Watermark/footer the source documents carry (author contact line). Filter
@@ -277,8 +321,15 @@ def fix_reversed_brackets(items: list[dict]) -> list[dict]:
 
 def lines_to_items(lines: list[LogicalLine]) -> list[dict]:
     """Run the shared post-extraction pipeline."""
-    lines = [ln for ln in lines
-             if not _is_watermark(ln.text) and not _is_scene_heading(ln.text)]
-    items = group_into_items(lines)
+    kept: list[LogicalLine] = []
+    for ln in lines:
+        if _is_watermark(ln.text):
+            continue
+        text = _strip_scene_heading(ln.text)
+        if text is None:
+            continue
+        ln.text = text
+        kept.append(ln)
+    items = group_into_items(kept)
     items = trim_preamble(items)
     return fix_reversed_brackets(items)

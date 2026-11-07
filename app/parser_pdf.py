@@ -181,9 +181,46 @@ def _annotate_right_aligned_lines(lines: list[LogicalLine]) -> None:
         return
     centered_share = sum(1 for ln in near_edge if ln.centered) / len(near_edge)
     if centered_share >= _CENTERED_BLOCK_RATIO_THRESHOLD:
+        _rescue_uncentered_near_edge(lines, near_edge, right_margin)
         return
     for ln in near_edge:
         ln.right_aligned = True
+
+
+def _rescue_uncentered_near_edge(lines: list[LogicalLine],
+                                 near_edge: list[LogicalLine],
+                                 right_margin: float) -> None:
+    """Per-line rescue when the centered-block guard has fired.
+
+    The block guard trips on every center-justified script — all 42 PDFs in
+    the review corpus — because long dialogue lines reach the margin. That
+    is the right call for the block, but it also discards the notes that are
+    unambiguous on their own: a line pinned to the right margin whose left
+    edge is ragged (`centered=False`) can't be a centered speech line
+    (אופוריה: "ג׳ולס לוקחת לו את הסיגריה." at x0=367 against a 505 margin).
+
+    One more condition keeps this from manufacturing fragments: the line
+    directly above must not itself be an unbold near-edge line. If it is,
+    the candidate is the short tail of a paragraph that already reached the
+    margin — the second line of a two-line note whose first line reads as
+    centered because it is full-width (סיינפלד: "ערוצים ללא הפסקה" under
+    "ג'רי ואיליין יושבים על הספה…"), or the last line of a speech (על
+    הספקטרום: "תקווה."). Rescuing only the tail would split a note or a
+    speech in two, which is worse than leaving the block guard's verdict.
+    Watermark lines are skipped when looking for the line above.
+    """
+    index = {id(ln): i for i, ln in enumerate(lines)}
+    for ln in near_edge:
+        if ln.centered:
+            continue
+        i = index[id(ln)] - 1
+        while i >= 0 and (not lines[i].text or _is_watermark(lines[i].text)):
+            i -= 1
+        prev = lines[i] if i >= 0 else None
+        prev_near_edge = (prev is not None and not prev.bold
+                          and (right_margin - prev.x1) <= _RIGHT_EDGE_TOLERANCE_PT)
+        if not prev_near_edge:
+            ln.right_aligned = True
 
 
 def _is_centered(x0: float, x1: float, page_width: float) -> bool:

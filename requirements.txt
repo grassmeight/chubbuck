@@ -2,6 +2,10 @@ pymupdf==1.27.2.3
 openpyxl==3.1.5
 python-docx==1.2.0
 pdfplumber==0.11.4
+# filler.py measures Hebrew glyph widths with Pillow to size rows; pdfplumber
+# pulls it in transitively today, but the row-height estimate depends on it,
+# so pin it explicitly.
+Pillow>=10
 python-bidi<0.5
 fastapi==0.136.1
 uvicorn[standard]==0.46.0
